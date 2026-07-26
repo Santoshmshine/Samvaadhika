@@ -1,0 +1,421 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+
+  <!-- ── WIZARD STEPS ── -->
+  <div class="wizard-steps">
+    <div class="wizard-step active" id="step1-indicator">
+      <span class="step-num">1</span> Upload
+    </div>
+    <div class="step-connector"></div>
+    <div class="wizard-step" id="step2-indicator">
+      <span class="step-num">2</span> Choose language
+    </div>
+    <div class="step-connector"></div>
+    <div class="wizard-step" id="step3-indicator">
+      <span class="step-num">3</span> Download
+    </div>
+  </div>
+
+  <!-- ── SPLIT PANEL ── -->
+  <div class="split-panel">
+
+    <!-- ════ LEFT: Upload + Language ════ -->
+    <div class="panel">
+      <div class="panel-header">STEP 1 &amp; 2 · UPLOAD AND TRANSLATE</div>
+      <div class="panel-body">
+
+        <!-- Drop zone -->
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+          <div class="drop-icon-circle">↑</div>
+          <div class="drop-title">Drag a file here, or click to browse</div>
+          <div class="drop-hint">Text · PDF · DOCX · PPTX · audio · video</div>
+          <input type="file" id="fileInput" style="display:none"
+                 accept=".docx,.pptx,.pdf,.xlsx,.csv,.mp3,.wav,.ogg,.m4a,.flac,.aac,.mp4,.avi,.mov,.mkv,.webm" />
+        </div>
+
+        <!-- Selected file row (hidden until file chosen) -->
+        <div class="file-row hidden" id="fileRow">
+          <div class="file-icon" id="fileExt">?</div>
+          <div class="file-info">
+            <div class="file-name" id="fileName">—</div>
+            <div class="file-size" id="fileSize">—</div>
+          </div>
+          <span class="file-check">✓</span>
+        </div>
+
+        <!-- Language row -->
+        <div class="lang-row">
+          <div class="lang-field">
+            <label>DETECTED LANGUAGE</label>
+            <div class="lang-value" id="detectedLang">—</div>
+          </div>
+          <div class="lang-field">
+            <label for="targetLang">TRANSLATE TO</label>
+            <select class="lang-select" id="targetLang">
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <!-- Translate button -->
+        <button class="btn-translate" id="translateBtn" disabled onclick="submitJob()">
+          Translate
+        </button>
+
+        <!-- Inline text translate toggle -->
+        <div style="margin-top:1rem;text-align:center;">
+          <button class="btn btn-secondary btn-sm" onclick="toggleTextMode()" id="textModeBtn">
+            ✏ Translate text instead
+          </button>
+        </div>
+
+        <!-- Text translate panel (hidden by default) -->
+        <div id="textPanel" class="hidden" style="margin-top:1rem;">
+          <div class="text-translate-grid">
+            <div>
+              <label class="form-label">Source text</label>
+              <textarea class="text-box" id="sourceText" placeholder="Type or paste text here…" oninput="onTextInput()"></textarea>
+              <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">
+                <span id="charCount">0</span> / 10,000 characters
+              </div>
+            </div>
+            <div>
+              <label class="form-label">Translation</label>
+              <div class="result-box" id="translationResult">
+                <span class="result-placeholder">Translation will appear here…</span>
+              </div>
+              <div id="translationMeta" class="hidden" style="margin-top:0.4rem;font-size:0.75rem;color:var(--text-muted);display:flex;gap:0.75rem;align-items:center;">
+                <span id="detectedLangText"></span>
+                <span id="fromCacheTag" class="hidden" style="background:var(--green-pale);padding:1px 6px;border-radius:4px;color:var(--green-dark);font-weight:600;">cached</span>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:0.75rem;display:flex;gap:0.75rem;align-items:center;">
+            <select class="lang-select" id="textSourceLang" style="width:auto;min-width:140px;">
+              <option value="auto">Auto-detect</option>
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+            <span style="color:var(--text-muted);">→</span>
+            <select class="lang-select" id="textTargetLang" style="width:auto;min-width:140px;">
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-primary" id="textTranslateBtn" onclick="translateText()" disabled>
+              Translate
+            </button>
+            <span class="spinner hidden" id="textSpinner"></span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Status bar -->
+      <div class="status-bar">
+        <span><span class="online-dot"></span>Running on BAIF's server · fully offline</span>
+        <span>No internet required · no per-use cost</span>
+      </div>
+    </div>
+
+    <!-- ════ RIGHT: Job Status ════ -->
+    <div class="panel">
+      <div class="panel-header">STEP 3 · JOB STATUS</div>
+      <div class="panel-body" style="padding:0.5rem 0;">
+
+        {% if recent_jobs %}
+        <ul class="job-list" id="jobList">
+          {% for job in recent_jobs %}
+          <li class="job-item" id="job-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}">
+            <div class="job-status-icon {{ job.status }}">
+              {% if job.status == 'completed' %}✓
+              {% elif job.status == 'processing' %}⟳
+              {% elif job.status == 'failed' %}✕
+              {% else %}·
+              {% endif %}
+            </div>
+            <div class="job-meta">
+              <div class="job-filename">{{ job.input_filename or 'Text translation' }}</div>
+              <div class="job-langs">
+                {{ languages.get(job.source_language, job.source_language or '?') }}
+                → {{ languages.get(job.target_language, job.target_language) }}
+              </div>
+              {% if job.status == 'processing' %}
+              <div class="job-progress-bar">
+                <div class="job-progress-fill" style="width:{{ job.progress }}%"></div>
+              </div>
+              {% endif %}
+            </div>
+            <div class="job-action">
+              {% if job.status == 'completed' %}
+                <span class="badge badge-completed">Completed</span>
+                {% if job.output_path or job.audio_output_path %}
+                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download">Download ↓</a>
+                {% endif %}
+              {% elif job.status == 'processing' %}
+                <span class="badge badge-processing">Processing</span>
+              {% elif job.status == 'failed' %}
+                <span class="badge badge-failed">Failed</span>
+              {% else %}
+                <span class="badge badge-queued">Queued</span>
+              {% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div style="padding:2rem 1rem;text-align:center;color:var(--text-muted);font-size:0.88rem;">
+          No translations yet.<br/>Upload a file or type text to get started.
+        </div>
+        {% endif %}
+
+        <div style="padding:0.75rem 1rem;border-top:1px solid var(--green-border);text-align:right;">
+          <a href="/jobs" class="btn btn-secondary btn-sm">View all jobs →</a>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /split-panel -->
+</div><!-- /app-wrapper -->
+
+<!-- Upload progress toast -->
+<div id="toast" class="hidden" style="
+  position:fixed;bottom:1.5rem;right:1.5rem;
+  background:var(--green-dark);color:white;
+  padding:0.75rem 1.25rem;border-radius:8px;
+  font-size:0.88rem;box-shadow:0 4px 16px rgba(0,0,0,0.2);
+  z-index:999;display:flex;align-items:center;gap:0.6rem;">
+  <span class="spinner" style="width:16px;height:16px;border-width:2px;border-top-color:var(--green-light);"></span>
+  <span id="toastMsg">Uploading…</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── File drag & drop ──
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+let selectedFile = null;
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+function handleFile(file) {
+  selectedFile = file;
+  const ext = file.name.split('.').pop().toUpperCase().slice(0,4);
+  document.getElementById('fileExt').textContent = ext;
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = formatBytes(file.size);
+  document.getElementById('fileRow').classList.remove('hidden');
+  document.getElementById('detectedLang').textContent = 'Detecting…';
+  document.getElementById('translateBtn').disabled = false;
+
+  // Update wizard step
+  setStep(2);
+
+  // Auto-detect language hint from filename (server will do real detection)
+  document.getElementById('detectedLang').textContent = 'Auto-detect';
+}
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+// ── Submit file job ──
+async function submitJob() {
+  if (!selectedFile) return;
+  const target = document.getElementById('targetLang').value;
+  const btn = document.getElementById('translateBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  showToast('Uploading file…');
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  fd.append('source_language', 'auto');
+  fd.append('target_language', target);
+
+  try {
+    const res = await fetch('/upload/file', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Upload failed');
+    hideToast();
+    setStep(3);
+    btn.textContent = 'Submitted ✓';
+    addJobToList(data.job_id, selectedFile.name, target, data.from_cache ? 'completed' : 'queued');
+    if (!data.from_cache) pollJob(data.job_id);
+  } catch(e) {
+    hideToast();
+    btn.disabled = false;
+    btn.textContent = 'Translate';
+    alert('Error: ' + e.message);
+  }
+}
+
+// ── Text translate ──
+let textTimer = null;
+function onTextInput() {
+  const txt = document.getElementById('sourceText').value;
+  document.getElementById('charCount').textContent = txt.length;
+  document.getElementById('textTranslateBtn').disabled = txt.trim().length === 0;
+  clearTimeout(textTimer);
+  if (txt.trim().length > 3) {
+    textTimer = setTimeout(translateText, 1200);
+  }
+}
+
+async function translateText() {
+  const text = document.getElementById('sourceText').value.trim();
+  if (!text) return;
+  const src = document.getElementById('textSourceLang').value;
+  const tgt = document.getElementById('textTargetLang').value;
+  const spinner = document.getElementById('textSpinner');
+  const btn = document.getElementById('textTranslateBtn');
+  spinner.classList.remove('hidden');
+  btn.disabled = true;
+
+  const fd = new FormData();
+  fd.append('text', text);
+  fd.append('source_language', src);
+  fd.append('target_language', tgt);
+
+  try {
+    const res = await fetch('/translate/text', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Translation failed');
+    document.getElementById('translationResult').textContent = data.translated_text;
+    document.getElementById('detectedLangText').textContent =
+      'Detected: ' + (data.source_language_name || data.source_language);
+    document.getElementById('translationMeta').classList.remove('hidden');
+    if (data.from_cache) document.getElementById('fromCacheTag').classList.remove('hidden');
+    else document.getElementById('fromCacheTag').classList.add('hidden');
+  } catch(e) {
+    document.getElementById('translationResult').textContent = 'Error: ' + e.message;
+  } finally {
+    spinner.classList.add('hidden');
+    btn.disabled = false;
+  }
+}
+
+// ── Text mode toggle ──
+function toggleTextMode() {
+  const panel = document.getElementById('textPanel');
+  const btn = document.getElementById('textModeBtn');
+  if (panel.classList.contains('hidden')) {
+    panel.classList.remove('hidden');
+    btn.textContent = '✕ Close text mode';
+  } else {
+    panel.classList.add('hidden');
+    btn.textContent = '✏ Translate text instead';
+  }
+}
+
+// ── Wizard step indicator ──
+function setStep(n) {
+  ['step1-indicator','step2-indicator','step3-indicator'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.classList.remove('active','done');
+    if (i + 1 < n) el.classList.add('done');
+    else if (i + 1 === n) el.classList.add('active');
+  });
+}
+
+// ── Job polling ──
+function pollJob(jobId) {
+  const interval = setInterval(async () => {
+    try {
+      const res = await fetch(`/jobs/${jobId}/status`);
+      const data = await res.json();
+      updateJobRow(data);
+      if (data.status === 'completed' || data.status === 'failed') {
+        clearInterval(interval);
+      }
+    } catch(e) { clearInterval(interval); }
+  }, 2500);
+}
+
+function updateJobRow(data) {
+  const row = document.getElementById('job-' + data.id);
+  if (!row) return;
+  row.dataset.status = data.status;
+  const icon = row.querySelector('.job-status-icon');
+  icon.className = 'job-status-icon ' + data.status;
+  icon.textContent = data.status === 'completed' ? '✓' : data.status === 'failed' ? '✕' : '⟳';
+
+  const action = row.querySelector('.job-action');
+  if (data.status === 'completed') {
+    action.innerHTML = `<span class="badge badge-completed">Completed</span>` +
+      (data.has_output_file || data.has_audio
+        ? `<br/><a class="btn-download" href="/jobs/${data.id}/download">Download ↓</a>` : '');
+  } else if (data.status === 'failed') {
+    action.innerHTML = `<span class="badge badge-failed">Failed</span>`;
+  } else if (data.status === 'processing') {
+    action.innerHTML = `<span class="badge badge-processing">Processing</span>`;
+    let pb = row.querySelector('.job-progress-bar');
+    if (!pb) {
+      pb = document.createElement('div');
+      pb.className = 'job-progress-bar';
+      pb.innerHTML = `<div class="job-progress-fill" style="width:${data.progress}%"></div>`;
+      row.querySelector('.job-meta').appendChild(pb);
+    } else {
+      pb.querySelector('.job-progress-fill').style.width = data.progress + '%';
+    }
+  }
+}
+
+function addJobToList(jobId, filename, targetLang, status) {
+  const list = document.getElementById('jobList');
+  if (!list) {
+    // Replace empty state
+    const panel = document.querySelector('.panel:last-child .panel-body');
+    panel.innerHTML = '<ul class="job-list" id="jobList"></ul>' +
+      '<div style="padding:0.75rem 1rem;border-top:1px solid var(--green-border);text-align:right;">' +
+      '<a href="/jobs" class="btn btn-secondary btn-sm">View all jobs →</a></div>';
+  }
+  const ul = document.getElementById('jobList');
+  const li = document.createElement('li');
+  li.className = 'job-item';
+  li.id = 'job-' + jobId;
+  li.dataset.jobId = jobId;
+  li.dataset.status = status;
+  li.innerHTML = `
+    <div class="job-status-icon ${status}">${status === 'completed' ? '✓' : '·'}</div>
+    <div class="job-meta">
+      <div class="job-filename">${filename}</div>
+      <div class="job-langs">→ ${targetLang}</div>
+    </div>
+    <div class="job-action">
+      <span class="badge badge-${status}">${status.charAt(0).toUpperCase()+status.slice(1)}</span>
+    </div>`;
+  ul.insertBefore(li, ul.firstChild);
+}
+
+// ── Toast ──
+function showToast(msg) {
+  document.getElementById('toastMsg').textContent = msg;
+  document.getElementById('toast').classList.remove('hidden');
+}
+function hideToast() {
+  document.getElementById('toast').classList.add('hidden');
+}
+
+// ── Auto-poll any in-progress jobs on page load ──
+document.querySelectorAll('[data-status="processing"],[data-status="queued"]').forEach(el => {
+  pollJob(el.dataset.jobId);
+});
+</script>
+{% endblock %}
