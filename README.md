@@ -4,15 +4,58 @@
 
 ---
 
-## What it does
+## Deployment options
 
-Samvaadhika translates BAIF's eLearning content — text, audio, video, and documents — between **English, Hindi (हिन्दी), and Marathi (मराठी)**, entirely offline on a single Windows machine. No cloud APIs, no per-use cost, no internet required at inference time.
-
-**Three clicks: upload → choose language → download.**
+| Option | Who runs it | Python needed? |
+|---|---|---|
+| **Standalone .exe** (recommended for BAIF) | BAIF IT — just unzip + double-click | No |
+| **Python source** (for developers) | Developer machine with Python 3.10+ | Yes |
 
 ---
 
-## Quick start (Windows)
+## Option A — Standalone Windows Executable (no Python needed)
+
+### For BAIF IT staff (receiving the package)
+
+1. Unzip `Samvaadhika.zip` to any folder (e.g. `C:\Samvaadhika\`)
+2. Double-click **`install.bat`** — creates Desktop and Start Menu shortcuts
+3. Double-click the **Samvaadhika** desktop shortcut
+4. Browser opens automatically at `http://localhost:8000`
+
+**That's it. No Python, no internet, no IT admin rights required.**
+
+Default login: `admin` / `Samvaadhika@2024` — change after first login.
+
+### For developers — building the .exe
+
+Prerequisites (developer machine only):
+- Python 3.10+
+- Internet access to download packages (one-time, during build only)
+
+```
+build.bat
+```
+
+Output: `dist\Samvaadhika\` — zip this folder and send to BAIF IT.
+
+**Key files:**
+
+| File | Purpose |
+|---|---|
+| [`launcher.py`](launcher.py) | PyInstaller entry point — fixes paths, opens browser, starts Uvicorn |
+| [`samvaadhika.spec`](samvaadhika.spec) | PyInstaller spec — controls what gets bundled |
+| [`build.bat`](build.bat) | Developer build script (runs PyInstaller) |
+| [`install.bat`](install.bat) | End-user installer (runs on BAIF PC, no Python needed) |
+
+### Optional: Auto-start on Windows boot (Windows Service)
+
+`install.bat` offers to install Samvaadhika as a Windows Service using [NSSM](https://nssm.cc/).
+Place `nssm.exe` in the same folder as `Samvaadhika.exe` before running `install.bat`.
+Once installed as a service, the app starts automatically on every reboot — no login required.
+
+---
+
+## Option B — Python source (developers / hackathon demo)
 
 ### Prerequisites
 - Windows 10 / 11
@@ -32,23 +75,26 @@ Double-click:  run.bat
 ```
 Then open your browser at **http://localhost:8000**
 
-### 3. Default admin login
+---
+
+## Default admin login
+
 | Field    | Value                  |
 |----------|------------------------|
 | Username | `admin`                |
 | Password | `Samvaadhika@2024`     |
 
-> ⚠ **Change the admin password immediately after first login.**
+> **Change the admin password immediately after first login.**
 
 ---
 
 ## AI model setup (download separately)
 
-The app runs with stub/fallback translation out of the box. For full AI quality, download these models into the `models/` folder:
+The app runs with stub/fallback translation out of the box. For full AI quality, download these models into the `models/` folder (next to `Samvaadhika.exe` for the standalone build, or in the project root for the Python build):
 
 | Model | Folder | Purpose |
 |---|---|---|
-| [IndicTrans2 distilled](https://huggingface.co/ai4bharat/indictrans2-en-indic-dist-200M) | `models/indictrans2/` | English ↔ Hindi ↔ Marathi translation |
+| [IndicTrans2 distilled](https://huggingface.co/ai4bharat/indictrans2-en-indic-dist-200M) | `models/indictrans2/` | English to/from Hindi/Marathi translation |
 | [faster-whisper small](https://huggingface.co/Systran/faster-whisper-small) | auto-downloaded on first use | Speech-to-text (ASR) |
 | [Indic Parler-TTS](https://huggingface.co/ai4bharat/indic-parler-tts) | `models/indic-parler-tts/` | Text-to-speech (TTS) |
 | [fastText lid.176.ftz](https://fasttext.cc/docs/en/language-identification.html) | `models/lid.176.ftz` | Language detection |
@@ -61,6 +107,13 @@ All models are MIT or Apache-2.0 licensed — free with no usage restrictions.
 
 ```
 Samvaadhika/
+├── launcher.py          # PyInstaller entry point (standalone exe)
+├── samvaadhika.spec     # PyInstaller build spec
+├── build.bat            # Developer: build the .exe
+├── install.bat          # BAIF IT: install shortcuts (no Python needed)
+├── setup.bat            # Developer: Python venv setup
+├── run.bat              # Developer: start the app
+├── requirements.txt     # Python dependencies
 ├── app/
 │   ├── main.py          # FastAPI app entry point
 │   ├── config.py        # All settings (ports, limits, paths)
@@ -75,15 +128,12 @@ Samvaadhika/
 │   │   ├── jobs.py      # Job status + download
 │   │   └── admin.py     # User mgmt, glossary, audit log
 │   ├── templates/       # Jinja2 HTML templates
-│   └── static/          # CSS, JS, images
-├── data/                # SQLite database file
-├── uploads/             # Uploaded files (temp)
-├── outputs/             # Translated output files
-├── cache/               # Content-hash dedup cache
-├── models/              # AI model checkpoints
-├── requirements.txt
-├── setup.bat            # One-time setup
-└── run.bat              # Start the app
+│   └── static/          # CSS, JS, images (logo)
+├── data/                # SQLite database file (created at runtime)
+├── uploads/             # Uploaded files (created at runtime)
+├── outputs/             # Translated output files (created at runtime)
+├── cache/               # Content-hash dedup cache (created at runtime)
+└── models/              # AI model checkpoints (download separately)
 ```
 
 ---
@@ -92,21 +142,22 @@ Samvaadhika/
 
 | Feature | Status |
 |---|---|
-| Instant text translation (EN ↔ HI ↔ MR) | ✅ MVP |
-| DOCX translation (format-preserving) | ✅ MVP |
-| PPTX translation (format-preserving) | ✅ MVP |
-| Audio → transcript → translation → TTS + SRT | ✅ MVP |
-| Video → audio extraction → full audio pipeline | ✅ MVP |
-| Auto language detection + manual override | ✅ MVP |
-| Async job queue with live status polling | ✅ MVP |
-| Content-hash dedup (never reprocess same file) | ✅ MVP |
-| Admin approval workflow for new users | ✅ MVP |
-| Domain glossary (agricultural/BAIF terms) | ✅ MVP |
-| Audit log (who translated what and when) | ✅ MVP |
-| PDF translation (text-native) | 🔶 Best effort |
-| Scanned PDF OCR (Tesseract) | 🔶 Best effort |
-| XLSX / CSV translation | 🔶 Stretch goal |
-| On-screen text in video (OCR) | 🔶 Best effort |
+| Instant text translation (EN / HI / MR) | MVP |
+| DOCX translation (format-preserving) | MVP |
+| PPTX translation (format-preserving) | MVP |
+| Audio to transcript to translation to TTS + SRT | MVP |
+| Video to audio extraction to full audio pipeline | MVP |
+| Auto language detection + manual override | MVP |
+| Async job queue with live status polling | MVP |
+| Content-hash dedup (never reprocess same file) | MVP |
+| Admin approval workflow for new users | MVP |
+| Domain glossary (agricultural/BAIF terms) | MVP |
+| Audit log (who translated what and when) | MVP |
+| Standalone Windows .exe (no Python needed) | MVP |
+| PDF translation (text-native) | Best effort |
+| Scanned PDF OCR (Tesseract) | Best effort |
+| XLSX / CSV translation | Stretch goal |
+| On-screen text in video (OCR) | Best effort |
 
 ---
 
@@ -153,14 +204,16 @@ Edit [`app/config.py`](app/config.py) to change:
 
 ---
 
-## Handover
+## Handover for BAIF IT
 
-For BAIF IT staff:
-- **Backup**: copy the `data/samvaadhika.db` file and the `outputs/` folder
-- **Restore**: replace those files on the new machine and run `run.bat`
-- **Add a language**: update `SUPPORTED_LANGUAGES` in `app/config.py` and download the corresponding IndicTrans2 checkpoint
-- **Windows Service**: use [NSSM](https://nssm.cc/) to wrap `run.bat` as a Windows Service so it starts automatically on reboot
+| Task | How |
+|---|---|
+| **Backup** | Copy `data/samvaadhika.db` and the `outputs/` folder |
+| **Restore** | Replace those files on the new machine and launch the exe |
+| **Add a language** | Update `SUPPORTED_LANGUAGES` in `app/config.py` and rebuild |
+| **Windows Service** | Use NSSM (prompted during `install.bat`) |
+| **Change port** | Set `PORT` in `app/config.py` and rebuild, or set env var `SAMVAADHIKA_PORT` |
 
 ---
 
-*Samvaadhika — Tech for Good Hackathon, HSBC × BAIF, 2024*
+*Samvaadhika — Tech for Good Hackathon, HSBC x BAIF, 2024*
