@@ -18,8 +18,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+python --version
 
-echo [1/6] Creating Python virtual environment...
+echo [1/7] Creating Python virtual environment...
 python -m venv venv
 if errorlevel 1 (
     echo [ERROR] Failed to create virtual environment.
@@ -27,28 +28,38 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/6] Activating virtual environment...
+echo [2/7] Activating virtual environment...
 call venv\Scripts\activate.bat
 
-echo [3/6] Upgrading pip...
-python -m pip install --upgrade pip --quiet
-
-echo [4/6] Installing Python dependencies...
-pip install -r requirements.txt
+echo [3/7] Upgrading pip, wheel, setuptools (prevents source-build errors)...
+python -m pip install --upgrade pip wheel setuptools --quiet
 if errorlevel 1 (
-    echo [ERROR] Dependency installation failed. Check requirements.txt and your internet connection.
+    echo [ERROR] Could not upgrade pip/wheel/setuptools.
     pause
     exit /b 1
 )
 
-echo [5/6] Creating required directories...
-if not exist "data"    mkdir data
-if not exist "uploads" mkdir uploads
-if not exist "cache"   mkdir cache
-if not exist "outputs" mkdir outputs
-if not exist "models"  mkdir models
+echo [4/7] Installing Pillow (binary wheel — avoids C compiler requirement)...
+pip install "Pillow>=10.4.0" --only-binary=Pillow --quiet
+if errorlevel 1 (
+    echo [WARN] Binary wheel not found for Pillow — trying source build...
+    pip install "Pillow>=10.4.0" --quiet
+)
 
-echo [6/6] Initialising database...
+echo [5/7] Installing remaining Python dependencies...
+pip install -r requirements.txt --quiet
+if errorlevel 1 (
+    echo [ERROR] Dependency installation failed. Check requirements.txt.
+    pause
+    exit /b 1
+)
+
+echo [6/7] Creating required directories...
+for %%D in (data uploads cache outputs models) do (
+    if not exist "%%D" mkdir "%%D"
+)
+
+echo [7/7] Initialising database (creates tables + default admin)...
 python -c "from app.database import init_db; init_db(); print('Database ready.')"
 if errorlevel 1 (
     echo [ERROR] Database initialisation failed.

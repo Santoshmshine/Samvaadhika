@@ -1,34 +1,47 @@
 """
 Samvaadhika - Authentication helpers.
 JWT tokens + bcrypt password hashing + session-cookie support.
+
+Uses bcrypt directly (not via passlib) for Python 3.12+ / 3.14 compatibility.
+Passwords are SHA-256 pre-hashed before bcrypt to safely handle >72-byte inputs.
 """
+import hashlib
+import base64
 from datetime import datetime, timedelta
 from typing import Optional
 
+import bcrypt
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from app.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 from app.database import get_db
 from app.models import User
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
-
 
 # ---------------------------------------------------------------------------
-# Password helpers
+# Password helpers — bcrypt with SHA-256 pre-hash (handles >72 byte passwords)
 # ---------------------------------------------------------------------------
+
+def _prehash(password: str) -> bytes:
+    """SHA-256 → base64 encode so bcrypt always gets a safe 44-byte input."""
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    return base64.b64encode(digest)
+
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash a password for storage."""
+    hashed = bcrypt.hashpw(_prehash(password), bcrypt.gensalt(rounds=12))
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    """Verify a plain password against a stored hash."""
+    try:
+        return bcrypt.checkpw(_prehash(plain), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
