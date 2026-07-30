@@ -35,8 +35,8 @@ datas += collect_data_files("jinja2")
 # SQLAlchemy dialects
 datas += collect_data_files("sqlalchemy")
 
-# passlib bcrypt data
-datas += collect_data_files("passlib")
+# bcrypt data (passlib was removed)
+# datas += collect_data_files("passlib")  # removed — using bcrypt directly
 
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
@@ -67,9 +67,8 @@ hiddenimports = [
     # SQLAlchemy
     "sqlalchemy.dialects.sqlite",
     "sqlalchemy.orm",
-    # Auth
-    "passlib.handlers.bcrypt",
-    "passlib.handlers.sha2_crypt",
+    # Auth (bcrypt directly, passlib removed)
+    "bcrypt",
     "jose",
     "jose.jwt",
     # Multipart (file uploads)

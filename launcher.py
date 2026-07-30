@@ -5,17 +5,20 @@ When PyInstaller bundles the app, this file is the __main__ module.
 It:
   1. Fixes sys._MEIPASS paths so templates/static are found at runtime.
   2. Initialises the database (creates tables + default admin).
-  3. Opens the browser automatically.
-  4. Starts Uvicorn in the same process (no subprocess needed).
+  3. Finds a free port (auto-increments if default is busy).
+  4. Opens the browser automatically.
+  5. Starts Uvicorn in the same process (no subprocess needed).
 
 The user just double-clicks Samvaadhika.exe — no Python, no terminal.
 """
 
 import multiprocessing
 import os
+import socket
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -72,6 +75,29 @@ logging.basicConfig(
 logger = logging.getLogger("samvaadhika.launcher")
 
 
+# ── Port utilities ────────────────────────────────────────────────────────────
+def _is_port_free(host: str, port: int) -> bool:
+    """Check if a TCP port is available for binding."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def _find_free_port(host: str, start_port: int, max_tries: int = 20) -> int:
+    """Find the first free port starting from start_port."""
+    for offset in range(max_tries):
+        port = start_port + offset
+        if _is_port_free(host, port):
+            return port
+    raise RuntimeError(
+        f"No free port found in range {start_port}-{start_port + max_tries - 1}. "
+        f"Close other applications or set SAMVAADHIKA_PORT environment variable."
+    )
+
+
 # ── Database init ─────────────────────────────────────────────────────────────
 def _init():
     from app.database import init_db
@@ -100,8 +126,13 @@ def main():
     # Required for PyInstaller + multiprocessing on Windows
     multiprocessing.freeze_support()
 
-    port = int(os.environ.get("SAMVAADHIKA_PORT", _cfg.PORT))
     host = os.environ.get("SAMVAADHIKA_HOST", _cfg.HOST)
+    preferred_port = int(os.environ.get("SAMVAADHIKA_PORT", _cfg.PORT))
+
+    # Find a free port (auto-increment if preferred is busy)
+    port = _find_free_port(host, preferred_port)
+    if port != preferred_port:
+        logger.info(f"Port {preferred_port} is busy, using port {port} instead.")
 
     logger.info(f"Samvaadhika v{_cfg.APP_VERSION} starting on {host}:{port}")
     _init()
@@ -121,4 +152,22 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        # Print the full traceback so the console window shows the error
+        print("\n" + "=" * 60)
+        print("SAMVAADHIKA ERROR — the application failed to start.")
+        print("=" * 60)
+        traceback.print_exc()
+        print("=" * 60)
+        # Log to file as well
+        try:
+            logger.exception("Fatal error during startup")
+        except Exception:
+            pass
+        # Keep the console window open so the user can read the error
+        if getattr(sys, "frozen", False):
+            print("\nPress Enter to close this window...")
+            input()
+        sys.exit(1)

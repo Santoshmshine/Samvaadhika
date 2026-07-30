@@ -34,7 +34,7 @@ SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET", "samvaadhika-session-secre
 APP_NAME = "Samvaadhika"
 APP_TAGLINE = "Bridging BAIF's eLearning Languages"
 APP_VERSION = "1.0.0"
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 PORT = 8000
 
 # Supported languages
