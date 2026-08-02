@@ -2,8 +2,8 @@ import os
 from huggingface_hub import login
 from huggingface_hub import snapshot_download
 
-# 1. Authenticate with your token (replace with your actual token string)
-login("YOUR_HF_TOKEN_HERE")
+# 1. Authenticate with your token (set HF_TOKEN env var or paste below)
+login(os.environ.get("HF_TOKEN", "YOUR_HF_TOKEN_HERE"))
 
 # Define your target directory
 local_dir = "./models/indic-parler-tts"

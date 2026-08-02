@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Upload File{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+
+  <div class="split-panel" style="grid-template-columns:1fr;">
+    <div class="panel">
+      <div class="panel-header">FILE UPLOAD · TRANSLATE DOCUMENTS, AUDIO &amp; VIDEO</div>
+      <div class="panel-body">
+
+        <!-- Drop zone -->
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+          <div class="drop-icon-circle">↑</div>
+          <div class="drop-title">Drag a file here, or click to browse</div>
+          <div class="drop-hint">PDF · DOCX · PPTX · MP3 · WAV · MP4 · AVI · MKV</div>
+          <input type="file" id="fileInput" style="display:none"
+                 accept=".docx,.pptx,.pdf,.xlsx,.csv,.mp3,.wav,.ogg,.m4a,.flac,.aac,.mp4,.avi,.mov,.mkv,.webm" />
+        </div>
+
+        <!-- Selected file row (hidden until file chosen) -->
+        <div class="file-row hidden" id="fileRow">
+          <div class="file-icon" id="fileExt">?</div>
+          <div class="file-info">
+            <div class="file-name" id="fileName">—</div>
+            <div class="file-size" id="fileSize">—</div>
+          </div>
+          <span class="file-check">✓</span>
+        </div>
+
+        <!-- Language row -->
+        <div class="lang-row" style="margin-top:1rem;">
+          <div class="lang-field">
+            <label for="sourceLang">SOURCE LANGUAGE</label>
+            <select class="lang-select" id="sourceLang">
+              <option value="auto">Auto-detect</option>
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="lang-field">
+            <label for="targetLang">TRANSLATE TO</label>
+            <select class="lang-select" id="targetLang">
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <!-- Upload button -->
+        <button class="btn-translate" id="uploadBtn" disabled onclick="submitUpload()">
+          Upload &amp; Translate
+        </button>
+
+        <!-- Status message -->
+        <div id="statusMsg" class="hidden" style="margin-top:1rem;text-align:center;font-size:0.88rem;color:var(--text-muted);"></div>
+
+        <div style="margin-top:1.5rem;text-align:center;">
+          <a href="/dashboard" class="btn btn-secondary btn-sm">← Back to Dashboard</a>
+          <a href="/jobs" class="btn btn-secondary btn-sm" style="margin-left:0.5rem;">View Jobs →</a>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+let selectedFile = null;
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+function handleFile(file) {
+  selectedFile = file;
+  const ext = file.name.split('.').pop().toUpperCase().slice(0,4);
+  document.getElementById('fileExt').textContent = ext;
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = formatBytes(file.size);
+  document.getElementById('fileRow').classList.remove('hidden');
+  document.getElementById('uploadBtn').disabled = false;
+}
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+async function submitUpload() {
+  if (!selectedFile) return;
+  const src = document.getElementById('sourceLang').value;
+  const tgt = document.getElementById('targetLang').value;
+  const btn = document.getElementById('uploadBtn');
+  const status = document.getElementById('statusMsg');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  status.classList.remove('hidden');
+  status.textContent = 'Uploading file…';
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  fd.append('source_language', src);
+  fd.append('target_language', tgt);
+
+  try {
+    const res = await fetch('/upload/file', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Upload failed');
+    if (data.from_cache) {
+      status.innerHTML = '✓ Translation found in cache! <a href="/jobs/' + data.job_id + '/download">Download ↓</a>';
+    } else {
+      status.innerHTML = '✓ Job submitted! <a href="/jobs">Track progress →</a>';
+    }
+    btn.textContent = 'Submitted ✓';
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Upload & Translate';
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = '#c0392b';
+  }
+}
+</script>
+{% endblock %}

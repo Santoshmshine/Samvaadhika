@@ -2,8 +2,8 @@ import os
 from huggingface_hub import login
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-# Replace this with a NEW token since the old one was exposed
-login("YOUR_HF_TOKEN_HERE")
+# Set HF_TOKEN env var or paste your token below
+login(os.environ.get("HF_TOKEN", "YOUR_HF_TOKEN_HERE"))
 
 model_name = "ai4bharat/indictrans2-en-indic-dist-200M"
 # Define your local visible directory
