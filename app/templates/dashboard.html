@@ -155,8 +155,14 @@
             <div class="job-action">
               {% if job.status == 'completed' %}
                 <span class="badge badge-completed">Completed</span>
-                {% if job.output_path or job.audio_output_path %}
-                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download">Download ↓</a>
+                {% if job.output_path %}
+                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download">📄 Document ↓</a>
+                {% endif %}
+                {% if job.audio_output_path %}
+                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download/audio">🔊 Audio ↓</a>
+                {% endif %}
+                {% if job.subtitle_path %}
+                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download/subtitles">📝 Subtitles ↓</a>
                 {% endif %}
               {% elif job.status == 'processing' %}
                 <span class="badge badge-processing">Processing</span>
@@ -358,9 +364,11 @@ function updateJobRow(data) {
 
   const action = row.querySelector('.job-action');
   if (data.status === 'completed') {
-    action.innerHTML = `<span class="badge badge-completed">Completed</span>` +
-      (data.has_output_file || data.has_audio
-        ? `<br/><a class="btn-download" href="/jobs/${data.id}/download">Download ↓</a>` : '');
+    let links = '';
+    if (data.has_output_file) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download">📄 Document ↓</a>`;
+    if (data.has_audio) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/audio">🔊 Audio ↓</a>`;
+    if (data.has_subtitles) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/subtitles">📝 Subtitles ↓</a>`;
+    action.innerHTML = `<span class="badge badge-completed">Completed</span>` + links;
   } else if (data.status === 'failed') {
     action.innerHTML = `<span class="badge badge-failed">Failed</span>`;
   } else if (data.status === 'processing') {

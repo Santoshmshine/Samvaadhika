@@ -188,35 +188,58 @@ def _process_audio_job(job: Job, db):
 
 
 def _process_video_job(job: Job, db):
-    from app.pipeline import extract_audio_from_video
-    import tempfile
+    from app.pipeline import (
+        extract_audio_from_video, normalize_audio, transcribe_audio,
+        translate_text, apply_glossary, synthesize_speech, generate_subtitles,
+    )
 
     input_path = Path(job.input_path)
     job_out_dir = OUTPUTS_DIR / job.id
     job_out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Extract audio
+    # Step 1: Extract audio from video
     audio_path = job_out_dir / "extracted_audio.wav"
     extract_audio_from_video(input_path, audio_path)
+    job.progress = 10
+    db.commit()
+
+    # Step 2: Normalize audio
+    wav_path = job_out_dir / "input_normalized.wav"
+    normalize_audio(audio_path, wav_path)
     job.progress = 20
     db.commit()
 
-    # Reuse audio pipeline
-    audio_job = Job(
-        id=job.id,
-        job_type="audio",
-        source_language=job.source_language,
-        target_language=job.target_language,
-        input_path=str(audio_path),
-        owner_id=job.owner_id,
-    )
-    _process_audio_job(audio_job, db)
+    # Step 3: ASR (speech-to-text)
+    segments, detected_lang = transcribe_audio(wav_path, job.source_language)
+    job.source_language = job.source_language or detected_lang
+    job.progress = 50
+    db.commit()
 
-    # Copy results back
-    job.output_text = audio_job.output_text
-    job.audio_output_path = audio_job.audio_output_path
-    job.subtitle_path = audio_job.subtitle_path
-    job.source_language = audio_job.source_language
+    # Step 4: Translate each segment
+    translated_segments = []
+    for seg in segments:
+        t_text, conf = translate_text(seg["text"], job.source_language, job.target_language)
+        t_text = apply_glossary(t_text, job.source_language, job.target_language, db)
+        translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
+    job.progress = 70
+    db.commit()
+
+    full_translated = " ".join(s["text"] for s in translated_segments)
+    job.output_text = full_translated
+
+    # Step 5: TTS (text-to-speech)
+    tts_path = job_out_dir / "translated_audio.wav"
+    tts_ok = synthesize_speech(full_translated, job.target_language, tts_path)
+    if tts_ok and tts_path.exists():
+        job.audio_output_path = str(tts_path)
+    job.progress = 85
+    db.commit()
+
+    # Step 6: Subtitles
+    srt_path = job_out_dir / "subtitles.srt"
+    generate_subtitles(segments, translated_segments, srt_path)
+    if srt_path.exists():
+        job.subtitle_path = str(srt_path)
     job.progress = 100
 
 
