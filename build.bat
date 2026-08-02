@@ -96,39 +96,39 @@ if errorlevel 1 (
 REM -- Copy runtime folders that must sit NEXT TO the exe --
 echo.
 echo  Copying runtime folders into dist\Samvaadhika\...
-for %%D in (models data uploads cache outputs) do (
-    if not exist "dist\Samvaadhika\%%D" mkdir "dist\Samvaadhika\%%D"
-)
+if not exist "dist\Samvaadhika\models"  mkdir "dist\Samvaadhika\models"
+if not exist "dist\Samvaadhika\data"    mkdir "dist\Samvaadhika\data"
+if not exist "dist\Samvaadhika\uploads" mkdir "dist\Samvaadhika\uploads"
+if not exist "dist\Samvaadhika\cache"   mkdir "dist\Samvaadhika\cache"
+if not exist "dist\Samvaadhika\outputs" mkdir "dist\Samvaadhika\outputs"
 
 REM -- Copy the end-user installer --
 copy /y install.bat "dist\Samvaadhika\install.bat" >nul
 
 REM -- Write README_INSTALL.txt for BAIF IT --
-(
-echo Samvaadhika — Installation Instructions
-echo ========================================
-echo.
-echo 1. Copy this entire folder to the target PC
-echo    Recommended: C:\Samvaadhika\
-echo.
-echo 2. Double-click  install.bat
-echo    Creates Desktop and Start Menu shortcuts.
-echo.
-echo 3. Double-click the "Samvaadhika" Desktop shortcut.
-echo    The app opens in your browser automatically.
-echo    URL: http://localhost:8000
-echo.
-echo Default login:
-echo   Username : admin
-echo   Password : Samvaadhika@2024
-echo   CHANGE THIS PASSWORD after first login.
-echo.
-echo AI Models (optional, for full translation quality):
-echo   Drop model folders into the "models" subfolder.
-echo   See README.md in the source package for details.
-echo.
-echo No Python. No internet. No IT admin rights needed.
-) > "dist\Samvaadhika\README_INSTALL.txt"
+echo Samvaadhika - Installation Instructions> "dist\Samvaadhika\README_INSTALL.txt"
+echo ========================================>> "dist\Samvaadhika\README_INSTALL.txt"
+echo.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo 1. Copy this entire folder to the target PC>> "dist\Samvaadhika\README_INSTALL.txt"
+echo    Recommended: C:\Samvaadhika\>> "dist\Samvaadhika\README_INSTALL.txt"
+echo.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo 2. Double-click install.bat>> "dist\Samvaadhika\README_INSTALL.txt"
+echo    Creates Desktop and Start Menu shortcuts.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo 3. Double-click the Samvaadhika Desktop shortcut.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo    The app opens in your browser automatically.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo    URL: http://localhost:8000>> "dist\Samvaadhika\README_INSTALL.txt"
+echo.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo Default login:>> "dist\Samvaadhika\README_INSTALL.txt"
+echo   Username : admin>> "dist\Samvaadhika\README_INSTALL.txt"
+echo   Password : Samvaadhika@2024>> "dist\Samvaadhika\README_INSTALL.txt"
+echo   CHANGE THIS PASSWORD after first login.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo AI Models - optional, for full translation quality:>> "dist\Samvaadhika\README_INSTALL.txt"
+echo   Drop model folders into the models subfolder.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo   See README.md in the source package for details.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo.>> "dist\Samvaadhika\README_INSTALL.txt"
+echo No Python. No internet. No IT admin rights needed.>> "dist\Samvaadhika\README_INSTALL.txt"
 
 echo.
 echo  =====================================================
