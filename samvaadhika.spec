@@ -38,6 +38,12 @@ datas += collect_data_files("sqlalchemy")
 # bcrypt data (passlib was removed)
 # datas += collect_data_files("passlib")  # removed — using bcrypt directly
 
+# Transformers model config files (needed for trust_remote_code, tokenizer configs)
+datas += collect_data_files("transformers", include_py_files=True)
+
+# sentencepiece data
+datas += collect_data_files("sentencepiece")
+
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
 # imported dynamically (e.g. via importlib, __import__, or string names).
@@ -90,11 +96,43 @@ hiddenimports = [
     "app.routes.translate",
     "app.routes.jobs",
     "app.routes.admin",
+    # AI / ML packages (lazy-imported in pipeline.py)
+    "torch",
+    "torch.nn",
+    "torch.nn.functional",
+    "transformers",
+    "transformers.models",
+    "transformers.models.auto",
+    "transformers.models.auto.modeling_auto",
+    "transformers.models.auto.tokenization_auto",
+    "sentencepiece",
+    "sacremoses",
+    "faster_whisper",
+    "ctranslate2",
+    "pyttsx3",
+    "pyttsx3.drivers",
+    "pyttsx3.drivers.sapi5",
+    "comtypes",
+    "comtypes.client",
+    "numpy",
+    "huggingface_hub",
+    "safetensors",
+    "tokenizers",
+    "regex",
+    "filelock",
+    "tqdm",
+    "pdfplumber",
+    "docx",
+    "pptx",
+    "soundfile",
 ]
 
 # Add all sqlalchemy submodules (dialects, etc.)
 hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("starlette")
+hiddenimports += collect_submodules("transformers")
+hiddenimports += collect_submodules("torch")
+hiddenimports += collect_submodules("faster_whisper")
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -108,15 +146,12 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Exclude heavy packages not needed at runtime
+        # Exclude packages not needed at runtime
         "matplotlib",
-        "numpy",          # only needed if AI models are loaded; add back if needed
         "pandas",
         "scipy",
         "PIL",            # Pillow — add back if OCR is bundled
         "cv2",            # OpenCV — add back if video OCR is bundled
-        "torch",          # PyTorch — too large to bundle; loaded from models/ at runtime
-        "transformers",   # same — loaded from models/ at runtime
         "tkinter",
         "test",
         "unittest",
