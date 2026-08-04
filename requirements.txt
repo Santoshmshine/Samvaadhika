@@ -43,8 +43,19 @@ pysubs2==1.7.3
 # ── Audio processing ───────────────────────────────────────────────────────
 ffmpeg-python==0.2.0
 
+# ── Machine Translation (IndicTrans2) ──────────────────────────────────────
+transformers>=4.40.0
+torch>=2.0.0
+sentencepiece>=0.2.0
+sacremoses>=0.1.1
+safetensors>=0.4.0
+huggingface_hub>=0.20.0
+tokenizers>=0.15.0
+
+# ── Text-to-Speech ─────────────────────────────────────────────────────────
+pyttsx3>=2.90
+
 # ── Translation fallback (argostranslate) ──────────────────────────────────
-# IndicTrans2 is loaded from models/ at runtime — not pip-installed
 # argostranslate has no 3.14 wheel; install manually if needed:
 # pip install argostranslate
 # argostranslate==1.9.6
