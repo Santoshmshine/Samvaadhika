@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Request Access — Samvaadhika</title>
+  <link rel="stylesheet" href="/static/css/samvaadhika.css" />
+  <link rel="icon" type="image/png" href="/static/images/logo.png" />
+</head>
+<body>
+<div class="auth-page">
+  <div class="auth-card">
+
+    <div class="auth-logo">
+      <img src="/static/images/logo.png" alt="Samvaadhika" onerror="this.style.display='none'" />
+      <div class="auth-title">Request Access</div>
+      <div class="auth-sub">An admin will approve your account</div>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">⚠ {{ error }}</div>
+    {% endif %}
+
+    {% if success %}
+    <div class="alert alert-success">✓ {{ success }}</div>
+    <p class="text-center mt-2"><a href="/auth/login">← Back to sign in</a></p>
+    {% else %}
+
+    <form method="post" action="/auth/register">
+      <div class="form-group">
+        <label class="form-label" for="full_name">Full Name</label>
+        <input class="form-control" type="text" id="full_name" name="full_name"
+               placeholder="Your full name" required autofocus />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="username">Username</label>
+        <input class="form-control" type="text" id="username" name="username"
+               placeholder="Choose a username" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="email">Email</label>
+        <input class="form-control" type="email" id="email" name="email"
+               placeholder="your@baif.org.in" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input class="form-control" type="password" id="password" name="password"
+               placeholder="Min. 8 characters" required minlength="8" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="confirm_password">Confirm Password</label>
+        <input class="form-control" type="password" id="confirm_password" name="confirm_password"
+               placeholder="Repeat password" required />
+      </div>
+      <button type="submit" class="btn btn-primary btn-block btn-lg" style="margin-top:0.5rem;">
+        Submit Request
+      </button>
+    </form>
+
+    <p class="text-center mt-2" style="font-size:0.85rem;color:var(--text-muted);">
+      Already have an account? <a href="/auth/login">Sign in</a>
+    </p>
+    {% endif %}
+
+  </div>
+</div>
+</body>
+</html>

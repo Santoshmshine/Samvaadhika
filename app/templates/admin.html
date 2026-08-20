@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  <div class="flex-between mb-2">
+    <div>
+      <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">⚙ Admin Dashboard</div>
+      <div class="text-muted" style="font-size:0.85rem;">System overview · user management · glossary</div>
+    </div>
+    <a href="/dashboard" class="btn btn-secondary btn-sm">← Back to app</a>
+  </div>
+
+  <!-- Stats row -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-bottom:1.5rem;">
+    <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;">
+      <div style="font-size:2rem;font-weight:800;color:var(--green-dark);">{{ total_users }}</div>
+      <div class="text-muted" style="font-size:0.8rem;">Total Users</div>
+    </div>
+    <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;{% if pending_users %}border-color:#f9d89a;{% endif %}">
+      <div style="font-size:2rem;font-weight:800;color:{% if pending_users %}var(--warning){% else %}var(--green-dark){% endif %};">{{ pending_users }}</div>
+      <div class="text-muted" style="font-size:0.8rem;">Pending Approval</div>
+    </div>
+    <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;">
+      <div style="font-size:2rem;font-weight:800;color:var(--green-dark);">{{ total_jobs }}</div>
+      <div class="text-muted" style="font-size:0.8rem;">Total Jobs</div>
+    </div>
+    <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;">
+      <div style="font-size:2rem;font-weight:800;color:var(--green-mid);">{{ jobs_by_status.completed }}</div>
+      <div class="text-muted" style="font-size:0.8rem;">Completed</div>
+    </div>
+    <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;">
+      <div style="font-size:2rem;font-weight:800;color:var(--danger);">{{ jobs_by_status.failed }}</div>
+      <div class="text-muted" style="font-size:0.8rem;">Failed</div>
+    </div>
+  </div>
+
+  <!-- Quick links -->
+  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1.5rem;">
+    <a href="/admin/users" class="btn btn-primary">👥 Manage Users</a>
+    <a href="/admin/glossary" class="btn btn-secondary">📖 Glossary</a>
+    <a href="/admin/jobs" class="btn btn-secondary">📋 All Jobs</a>
+    <a href="/admin/audit" class="btn btn-secondary">🔍 Audit Log</a>
+  </div>
+
+  <!-- Recent audit log -->
+  <div class="panel">
+    <div class="panel-header">RECENT ACTIVITY</div>
+    <div class="panel-body" style="padding:0;">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>User</th>
+              <th>Action</th>
+              <th>Detail</th>
+              <th>IP</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for log in recent_logs %}
+            <tr>
+              <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">
+                {{ log.timestamp.strftime('%d %b %H:%M') if log.timestamp else '—' }}
+              </td>
+              <td style="font-size:0.82rem;">{{ log.user.username if log.user else '—' }}</td>
+              <td><code style="font-size:0.78rem;background:var(--green-pale);padding:1px 5px;border-radius:3px;">{{ log.action }}</code></td>
+              <td style="font-size:0.82rem;color:var(--text-muted);">{{ (log.detail or '')[:60] }}</td>
+              <td style="font-size:0.78rem;color:var(--text-muted);">{{ log.ip_address or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Samvaadhika{% endblock %} — BAIF Translation</title>
+  <link rel="stylesheet" href="/static/css/samvaadhika.css" />
+  <link rel="icon" type="image/png" href="/static/images/logo.png" />
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- ── NAVBAR ── -->
+<nav class="navbar">
+  <a class="navbar-brand" href="/dashboard">
+    <div class="brand-avatar">S</div>
+    <span class="brand-name">Samvaadhika</span>
+  </a>
+
+  {% if user %}
+  <div class="navbar-user">
+    <span class="user-dot"></span>
+    <span>{{ user.full_name or user.username }}</span>
+    {% if user.role == 'admin' %}
+      <span style="font-size:0.7rem;background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:10px;margin-left:4px;">Admin</span>
+    {% endif %}
+    {% if user.role == 'admin' %}
+    <a href="/admin/" style="color:rgba(255,255,255,0.75);font-size:0.78rem;">⚙ Admin</a>
+    {% endif %}
+    <a href="/auth/logout">Sign out</a>
+  </div>
+  {% endif %}
+</nav>
+
+<!-- ── PAGE CONTENT ── -->
+{% block content %}{% endblock %}
+
+<script src="/static/js/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
