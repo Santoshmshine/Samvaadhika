@@ -15,8 +15,32 @@ Why onedir instead of onefile?
 """
 
 import sys
+import os
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, Tree
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+# `Tree` helper was introduced in newer PyInstaller versions. Provide a
+# lightweight fallback for older PyInstaller builds that don't expose it.
+try:
+    from PyInstaller.utils.hooks import Tree  # type: ignore
+except Exception:
+    def Tree(src, prefix=None):
+        """Fallback: convert a directory tree into datas-style tuples.
+
+        Returns a list of `(source_path, dest_dir)` tuples suitable for
+        appending to `datas`.
+        """
+        src_path = Path(src)
+        if not src_path.exists():
+            return []
+        out = []
+        for p in src_path.rglob('*'):
+            if p.is_file():
+                # destination directory inside the bundle (prefix/<relative parent>)
+                rel_parent = p.parent.relative_to(src_path)
+                dest_dir = os.path.join(prefix or '', str(rel_parent))
+                out.append((str(p), dest_dir))
+        return out
 
 block_cipher = None
 
