@@ -1,4 +1,6 @@
 @echo off
+REM Ensure the script runs from its containing directory (repository root)
+cd /d "%~dp0"
 REM ============================================================
 REM  Samvaadhika — Build standalone Windows executable
 REM  Run this on the DEVELOPER machine (needs Python + internet)
