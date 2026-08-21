@@ -1,0 +1,69 @@
+# Samvaadhika - Offline Multilingual Translation Platform
+# All open-source, CPU-friendly dependencies
+# Pinned to versions with pre-built wheels for Python 3.10-3.14 on Windows
+
+# ── Web framework ──────────────────────────────────────────────────────────
+# Pin starlette to 0.41.3 — starlette 1.x broke Jinja2 LRU cache key hashing
+fastapi==0.115.6
+starlette==0.41.3
+uvicorn[standard]==0.30.6
+jinja2==3.1.6
+python-multipart==0.0.12
+itsdangerous==2.2.0
+aiofiles==23.2.1
+
+# ── Database ───────────────────────────────────────────────────────────────
+sqlalchemy==2.0.36
+
+# ── Authentication ─────────────────────────────────────────────────────────
+# passlib is unmaintained and breaks on Python 3.12+/3.14 with newer bcrypt.
+# We use bcrypt directly with SHA-256 pre-hashing (see app/auth.py).
+bcrypt>=4.1.0
+python-jose[cryptography]==3.3.0
+
+# ── Document processing ────────────────────────────────────────────────────
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+pdfplumber==0.11.4
+
+# ── Image / OCR ────────────────────────────────────────────────────────────
+# Use >= so pip picks the newest wheel that matches your Python version
+Pillow>=10.4.0
+pytesseract==0.3.13
+# opencv-python-headless has no Python 3.14 wheel yet — use headless build
+# opencv-python-headless==4.10.0.84   # uncomment when 3.14 wheels are available
+
+# ── ASR — Speech to Text ───────────────────────────────────────────────────
+faster-whisper==1.1.0
+
+# ── Subtitle generation ────────────────────────────────────────────────────
+pysubs2==1.7.3
+
+# ── Audio processing ───────────────────────────────────────────────────────
+ffmpeg-python==0.2.0
+
+# ── Machine Translation (IndicTrans2) ──────────────────────────────────────
+transformers>=4.40.0
+torch>=2.0.0
+sentencepiece>=0.2.0
+sacremoses>=0.1.1
+safetensors>=0.4.0
+huggingface_hub>=0.20.0
+tokenizers>=0.15.0
+
+# ── Text-to-Speech ─────────────────────────────────────────────────────────
+pyttsx3>=2.90
+
+# ── Translation fallback (argostranslate) ──────────────────────────────────
+# argostranslate has no 3.14 wheel; install manually if needed:
+# pip install argostranslate
+# argostranslate==1.9.6
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+httpx==0.27.2
+tqdm==4.66.5
+loguru==0.7.2
+
+# ── PyInstaller (build machine only — not needed on BAIF PC) ───────────────
+# pyinstaller>=6.10.0   # installed by build.bat automatically

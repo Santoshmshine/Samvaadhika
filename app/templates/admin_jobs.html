@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}All Jobs{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  <div class="flex-between mb-2">
+    <div>
+      <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">📋 All Translation Jobs</div>
+      <div class="text-muted" style="font-size:0.85rem;">System-wide job queue — requeue failed jobs here</div>
+    </div>
+    <a href="/admin/" class="btn btn-secondary btn-sm">← Admin home</a>
+  </div>
+
+  <div id="alertBox"></div>
+
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Job ID</th>
+              <th>User</th>
+              <th>File / Content</th>
+              <th>Type</th>
+              <th>Languages</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for job in jobs %}
+            <tr>
+              <td style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;">
+                {{ job.id[:8] }}…
+              </td>
+              <td style="font-size:0.82rem;">{{ job.owner.username if job.owner else '—' }}</td>
+              <td style="font-size:0.82rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                {{ job.input_filename or 'Text' }}
+              </td>
+              <td style="font-size:0.82rem;text-transform:capitalize;">{{ job.job_type }}</td>
+              <td style="font-size:0.78rem;">
+                {{ languages.get(job.source_language, job.source_language or '?') }}
+                → {{ languages.get(job.target_language, job.target_language) }}
+              </td>
+              <td>
+                <span class="badge badge-{{ job.status }}">{{ job.status | capitalize }}</span>
+              </td>
+              <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">
+                {{ job.created_at.strftime('%d %b %H:%M') if job.created_at else '—' }}
+              </td>
+              <td>
+                {% if job.status == 'failed' %}
+                <button class="btn btn-secondary btn-sm" onclick="requeueJob('{{ job.id }}')">
+                  ↺ Requeue
+                </button>
+                {% endif %}
+                {% if job.status == 'completed' and job.output_path %}
+                <a href="/jobs/{{ job.id }}/download" class="btn btn-primary btn-sm">↓</a>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:2rem;">
+              No jobs found.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function requeueJob(id) {
+  const res = await fetch(`/admin/jobs/${id}/requeue`, { method: 'POST' });
+  const data = await res.json();
+  document.getElementById('alertBox').innerHTML =
+    `<div class="alert alert-${res.ok ? 'success' : 'error'}">${data.message || data.detail}</div>`;
+  if (res.ok) setTimeout(() => location.reload(), 1200);
+}
+</script>
+{% endblock %}
