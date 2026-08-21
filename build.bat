@@ -57,7 +57,7 @@ if errorlevel 1 (
 
 REM -- Install all other app dependencies --
 echo [3/5] Installing app dependencies...
-pip install -r requirements.txt --quiet
+pip install -r "%~dp0requirements.txt" --quiet
 if errorlevel 1 (
     echo [ERROR] Dependency installation failed. See output above.
     pause
