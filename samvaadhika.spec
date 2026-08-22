@@ -186,6 +186,11 @@ a = Analysis(
         "tkinter",
         "test",
         "unittest",
+        # CUDA / GPU-only vendor modules that cause ModuleNotFoundError
+        # when building on CPU-only systems. Safe to exclude for CPU builds.
+        "cuda",
+        "torch._vendor.quack",
+        "cupy",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
