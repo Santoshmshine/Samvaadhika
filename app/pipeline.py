@@ -174,8 +174,21 @@ def _get_lang_detector():
                 logger.warning("fastText model not found (tried lid.176.ftz, lid.176.bin) — using stub.")
                 _lang_detector = "stub"
         except Exception as e:
-            logger.warning(f"fasttext not available: {e}. Using stub language detector.")
-            _lang_detector = "stub"
+            logger.warning(f"fasttext not available: {e}. Using lightweight fallback detector.")
+
+            # Lightweight fallback detector: detect Devanagari characters for
+            # Hindi/Marathi vs Latin for English. This avoids a hard dependency
+            # on fastText while still giving reasonable auto-detection for the
+            # supported languages (en, hi, mr).
+            class _SimpleLangDetector:
+                def predict(self, text: str, k: int = 1):
+                    # If Devanagari-range characters present, prefer Hindi/Marathi
+                    if any('\u0900' <= ch <= '\u097F' for ch in text):
+                        return [("__label__hi", 0.99)]
+                    # Fallback to English
+                    return [("__label__en", 0.99)]
+
+            _lang_detector = _SimpleLangDetector()
     return _lang_detector
 
 
