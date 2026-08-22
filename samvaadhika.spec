@@ -75,6 +75,12 @@ datas += Tree("models", prefix="models") if Path("models").exists() else []
 datas += Tree("fonts", prefix="fonts") if Path("fonts").exists() else []
 datas += Tree("ffmpeg", prefix="ffmpeg") if Path("ffmpeg").exists() else []
 
+# Ensure fastText language-id model files are explicitly included when present
+if Path("models/lid.176.ftz").exists():
+    datas += [(str(Path("models") / "lid.176.ftz"), "models")]
+if Path("models/lid.176.bin").exists():
+    datas += [(str(Path("models") / "lid.176.bin"), "models")]
+
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
 # imported dynamically (e.g. via importlib, __import__, or string names).
@@ -156,6 +162,9 @@ hiddenimports = [
     "docx",
     "pptx",
     "soundfile",
+    # fastText language detector
+    "fasttext",
+    "fasttext.util",
 ]
 
 # Add all sqlalchemy submodules (dialects, etc.)
