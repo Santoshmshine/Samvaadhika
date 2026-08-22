@@ -17,6 +17,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
+import sys
 
 from app.config import (
     BASE_DIR, CACHE_DIR, OUTPUTS_DIR, UPLOADS_DIR, MODELS_DIR,
@@ -25,6 +26,19 @@ from app.config import (
 )
 
 logger = logging.getLogger("samvaadhika.pipeline")
+
+# When running as a PyInstaller bundle, model files are extracted to
+# the runtime folder available at `sys._MEIPASS`. Use an "effective"
+# models directory so all lookup helpers find bundled models at runtime.
+try:
+    _meipass = getattr(sys, "_MEIPASS", None)
+except Exception:
+    _meipass = None
+
+if _meipass:
+    MODELS_DIR_EFFECTIVE = Path(_meipass) / "models"
+else:
+    MODELS_DIR_EFFECTIVE = MODELS_DIR
 
 # ---------------------------------------------------------------------------
 # Ensure ffmpeg is on PATH (winget installs to a deep location)
@@ -115,7 +129,7 @@ def _find_model_dir(name: str, *alt_names: str) -> Optional[Path]:
     """
     candidates = [name] + list(alt_names)
     for candidate in candidates:
-        model_dir = MODELS_DIR / candidate
+        model_dir = MODELS_DIR_EFFECTIVE / candidate
         if model_dir.exists():
             return _resolve_hf_cache(model_dir)
     return None
@@ -162,7 +176,7 @@ def _get_lang_detector():
             # Try both .ftz (compressed) and .bin (full) variants
             model_path = None
             for fname in ["lid.176.ftz", "lid.176.bin"]:
-                candidate = MODELS_DIR / fname
+                candidate = MODELS_DIR_EFFECTIVE / fname
                 if candidate.exists():
                     model_path = candidate
                     break
