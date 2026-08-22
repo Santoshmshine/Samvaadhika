@@ -240,13 +240,13 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
     try:
         return _translate_indictrans2(text, source_lang, target_lang)
     except Exception as e:
-        logger.warning(f"IndicTrans2 unavailable ({e}), trying argostranslate fallback.")
+        logger.exception("IndicTrans2 unavailable, trying argostranslate fallback.")
 
     # Argostranslate fallback
     try:
         return _translate_argos(text, source_lang, target_lang)
     except Exception as e:
-        logger.warning(f"argostranslate unavailable ({e}). Returning stub translation.")
+        logger.exception("argostranslate unavailable. Returning stub translation.")
 
     # Final stub — clearly marked so reviewers know it's a placeholder
     return f"[TRANSLATION STUB: {source_lang}→{target_lang}] {text}", 0.0
