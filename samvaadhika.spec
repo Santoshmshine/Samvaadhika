@@ -85,6 +85,11 @@ if Path("models/lid.176.ftz").exists():
 if Path("models/lid.176.bin").exists():
     datas += [(str(Path("models") / "lid.176.bin"), "models")]
 
+# Bundle a small shim for `transformers.onnx` so HF configs that import
+# it at load-time don't crash when ONNX isn't installed in the build env.
+if Path("build/shims/transformers_onnx_stub.py").exists():
+    datas += [(str(Path("build/shims/transformers_onnx_stub.py")), "transformers/onnx.py")]
+
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
 # imported dynamically (e.g. via importlib, __import__, or string names).
