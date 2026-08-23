@@ -18,6 +18,10 @@ import sys
 import os
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import importlib.util
+import sysconfig
+import glob
+import os
 
 # `Tree` helper was introduced in newer PyInstaller versions. Provide a
 # lightweight fallback for older PyInstaller builds that don't expose it.
@@ -165,6 +169,8 @@ hiddenimports = [
     # fastText language detector
     "fasttext",
     "fasttext.util",
+    # transformers onnx submodule needed by some HF configs
+    "transformers.onnx",
 ]
 
 # Add all sqlalchemy submodules (dialects, etc.)
@@ -179,7 +185,7 @@ hiddenimports += collect_submodules("faster_whisper")
 a = Analysis(
     ["launcher.py"],
     pathex=["."],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
