@@ -180,6 +180,21 @@ hiddenimports += collect_submodules("transformers")
 hiddenimports += collect_submodules("torch")
 hiddenimports += collect_submodules("faster_whisper")
 
+# Collect compiled extension binaries that PyInstaller may miss (fastText)
+binaries = []
+try:
+    site_purelib = sysconfig.get_paths()['purelib']
+    for p in glob.glob(os.path.join(site_purelib, 'fasttext_pybind*.pyd')):
+        binaries.append((p, 'fasttext'))
+    spec = importlib.util.find_spec('fasttext')
+    if spec and getattr(spec, 'origin', None):
+        origin = spec.origin
+        if origin.endswith(('.pyd', '.dll')) and origin not in [b[0] for b in binaries]:
+            binaries.append((origin, 'fasttext'))
+except Exception:
+    # best-effort; missing binaries will be diagnosed at build time
+    binaries = binaries
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 a = Analysis(
