@@ -194,7 +194,6 @@ a = Analysis(
         "cv2",            # OpenCV — add back if video OCR is bundled
         "tkinter",
         "test",
-        "unittest",
         # CUDA / GPU-only vendor modules that cause ModuleNotFoundError
         # when building on CPU-only systems. Safe to exclude for CPU builds.
         "cuda",
