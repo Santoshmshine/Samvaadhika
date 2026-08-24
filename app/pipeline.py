@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 import sys
+import types
 
 from app.config import (
     BASE_DIR, CACHE_DIR, OUTPUTS_DIR, UPLOADS_DIR, MODELS_DIR,
@@ -304,6 +305,26 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     lang_map = {"en": "eng_Latn", "hi": "hin_Deva", "mr": "mar_Deva"}
     src_code = lang_map.get(src, "eng_Latn")
     tgt_code = lang_map.get(tgt, "hin_Deva")
+
+    # Some HF model configs import `transformers.onnx` at load-time. If the
+    # optional ONNX support isn't installed in the environment, create a
+    # minimal shim module to satisfy those imports so models can still load.
+    try:
+        import importlib
+        importlib.import_module('transformers.onnx')
+    except Exception:
+        # Inject a tiny shim into sys.modules
+        if 'transformers.onnx' not in sys.modules:
+            mod = types.ModuleType('transformers.onnx')
+            class OnnxConfig:
+                def __init__(self, *args, **kwargs):
+                    pass
+            class OnnxSeq2SeqConfigWithPast(OnnxConfig):
+                pass
+            mod.OnnxConfig = OnnxConfig
+            mod.OnnxSeq2SeqConfigWithPast = OnnxSeq2SeqConfigWithPast
+            mod._has_onnx_support = lambda: False
+            sys.modules['transformers.onnx'] = mod
 
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
