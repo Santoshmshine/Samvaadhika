@@ -313,9 +313,12 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
         import importlib
         importlib.import_module('transformers.onnx')
     except Exception:
-        # Inject a tiny shim into sys.modules
+        # Inject a tiny shim into sys.modules that behaves like a package
+        # so imports like `from transformers.onnx.utils import ...` succeed.
         if 'transformers.onnx' not in sys.modules:
             mod = types.ModuleType('transformers.onnx')
+            # Mark as package
+            mod.__path__ = []
             class OnnxConfig:
                 def __init__(self, *args, **kwargs):
                     pass
@@ -324,7 +327,14 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
             mod.OnnxConfig = OnnxConfig
             mod.OnnxSeq2SeqConfigWithPast = OnnxSeq2SeqConfigWithPast
             mod._has_onnx_support = lambda: False
+            # Create a utils submodule with a minimal compute function expected
+            utils_mod = types.ModuleType('transformers.onnx.utils')
+            def compute_effective_axis_dimension(*args, **kwargs):
+                # Best-effort placeholder: return 1 so downstream callers can proceed
+                return 1
+            utils_mod.compute_effective_axis_dimension = compute_effective_axis_dimension
             sys.modules['transformers.onnx'] = mod
+            sys.modules['transformers.onnx.utils'] = utils_mod
 
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
