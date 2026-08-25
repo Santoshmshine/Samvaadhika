@@ -336,6 +336,20 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
             sys.modules['transformers.onnx'] = mod
             sys.modules['transformers.onnx.utils'] = utils_mod
 
+    # Compatibility shim: some HF tokenizers (like IndicTrans2's) assume
+    # a `_special_tokens_map` attribute exists on the tokenizer base class
+    # and will fail during `__init__` otherwise. Ensure the common base
+    # classes expose a dict at class-level so instance __setattr__ can mutate it.
+    try:
+        import transformers.tokenization_utils_base as _tub
+        for _cls_name in ('PreTrainedTokenizerBase', 'PreTrainedTokenizer', 'PreTrainedTokenizerFast'):
+            if hasattr(_tub, _cls_name):
+                _cls = getattr(_tub, _cls_name)
+                if not hasattr(_cls, '_special_tokens_map'):
+                    setattr(_cls, '_special_tokens_map', {})
+    except Exception as _e:
+        logger.debug(f"Failed to apply tokenizer compatibility shim: {_e}")
+
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
     model.eval()
