@@ -347,6 +347,18 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
                 _cls = getattr(_tub, _cls_name)
                 if not hasattr(_cls, '_special_tokens_map'):
                     setattr(_cls, '_special_tokens_map', {})
+                # Add common compatibility defaults accessed by some custom
+                # tokenizers (IndicTrans's tokenizer expects these attributes).
+                if not hasattr(_cls, 'verbose'):
+                    setattr(_cls, 'verbose', False)
+                if not hasattr(_cls, 'src_encoder'):
+                    setattr(_cls, 'src_encoder', {})
+                if not hasattr(_cls, 'tgt_encoder'):
+                    setattr(_cls, 'tgt_encoder', {})
+                if not hasattr(_cls, 'src_decoder'):
+                    setattr(_cls, 'src_decoder', {})
+                if not hasattr(_cls, 'tgt_decoder'):
+                    setattr(_cls, 'tgt_decoder', {})
     except Exception as _e:
         logger.debug(f"Failed to apply tokenizer compatibility shim: {_e}")
 
