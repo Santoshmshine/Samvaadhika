@@ -362,7 +362,26 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     except Exception as _e:
         logger.debug(f"Failed to apply tokenizer compatibility shim: {_e}")
 
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
+    # Prefer passing explicit file paths so custom tokenizers load the
+    # vocab/SPM files correctly when the model is bundled inside a
+    # nested snapshot layout (PyInstaller bundles, HF cache, etc.).
+    tok_kwargs = dict(
+        trust_remote_code=True,
+        use_fast=False,
+    )
+    try:
+        tok_kwargs.update(
+            src_vocab_fp=str(Path(model_dir) / "dict.SRC.json"),
+            tgt_vocab_fp=str(Path(model_dir) / "dict.TGT.json"),
+            src_spm_fp=str(Path(model_dir) / "model.SRC"),
+            tgt_spm_fp=str(Path(model_dir) / "model.TGT"),
+        )
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), **tok_kwargs)
+        logger.info("IndicTrans2 tokenizer loaded with explicit file paths.")
+    except Exception as e:
+        logger.warning(f"Loading tokenizer with explicit paths failed: {e}; falling back to default loader.")
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
+
     model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
     model.eval()
 
