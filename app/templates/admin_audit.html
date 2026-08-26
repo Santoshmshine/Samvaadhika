@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Audit Log{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  <div class="flex-between mb-2">
+    <div>
+      <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">🔍 Audit Log</div>
+      <div class="text-muted" style="font-size:0.85rem;">Immutable record of all user actions</div>
+    </div>
+    <a href="/admin/" class="btn btn-secondary btn-sm">← Admin home</a>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Action</th>
+              <th>Detail</th>
+              <th>IP Address</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for log in logs %}
+            <tr>
+              <td style="font-size:0.78rem;white-space:nowrap;color:var(--text-muted);">
+                {{ log.timestamp.strftime('%d %b %Y %H:%M:%S') if log.timestamp else '—' }}
+              </td>
+              <td style="font-size:0.82rem;">{{ log.user.username if log.user else '—' }}</td>
+              <td>
+                <code style="font-size:0.78rem;background:var(--green-pale);padding:1px 5px;border-radius:3px;">
+                  {{ log.action }}
+                </code>
+              </td>
+              <td style="font-size:0.82rem;color:var(--text-muted);">{{ log.detail or '—' }}</td>
+              <td style="font-size:0.78rem;color:var(--text-muted);">{{ log.ip_address or '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:2rem;">
+              No audit log entries yet.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Manage Users{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  <div class="flex-between mb-2">
+    <div>
+      <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">👥 User Management</div>
+      <div class="text-muted" style="font-size:0.85rem;">Approve, deactivate, and manage user accounts</div>
+    </div>
+    <a href="/admin/" class="btn btn-secondary btn-sm">← Admin home</a>
+  </div>
+
+  <div id="alertBox"></div>
+
+  <div class="panel" style="margin-bottom:1rem;">
+    <div class="panel-header">CREATE USER</div>
+    <div class="panel-body">
+      <form id="createUserForm" class="admin-user-form">
+        <input name="username" placeholder="Username" minlength="3" required />
+        <input name="full_name" placeholder="Full name" />
+        <input name="email" type="email" placeholder="Email" required />
+        <input name="password" type="password" placeholder="Initial password (8+ characters)" minlength="8" required />
+        <select name="role" aria-label="User role"><option value="user">Standard user</option><option value="admin">Admin</option></select>
+        <button class="btn btn-primary" type="submit">Create account</button>
+      </form>
+      <div class="text-muted" style="font-size:0.78rem;margin-top:0.6rem;">Admin-created accounts are active and approved immediately.</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name / Username</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Registered</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in users %}
+            <tr id="user-row-{{ u.id }}">
+              <td>
+                <div style="font-weight:600;font-size:0.88rem;">{{ u.full_name or u.username }}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);">@{{ u.username }}</div>
+              </td>
+              <td style="font-size:0.82rem;">{{ u.email }}</td>
+              <td>
+                <span class="badge {% if u.role == 'admin' %}badge-completed{% else %}badge-queued{% endif %}">
+                  {{ u.role }}
+                </span>
+              </td>
+              <td>
+                {% if not u.is_approved %}
+                  <span class="badge" style="background:#fef3e2;color:#7d4e00;">Pending</span>
+                {% elif not u.is_active %}
+                  <span class="badge badge-failed">Inactive</span>
+                {% else %}
+                  <span class="badge badge-completed">Active</span>
+                {% endif %}
+              </td>
+              <td style="font-size:0.78rem;color:var(--text-muted);">
+                {{ u.created_at.strftime('%d %b %Y') if u.created_at else '—' }}
+              </td>
+              <td>
+                <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                  {% if not u.is_approved %}
+                  <button class="btn btn-primary btn-sm" onclick="approveUser('{{ u.id }}', '{{ u.username }}')">
+                    ✓ Approve
+                  </button>
+                  {% endif %}
+                  {% if u.is_active and u.id != user.id %}
+                  <button class="btn btn-danger btn-sm" onclick="deactivateUser('{{ u.id }}', '{{ u.username }}')">
+                    Deactivate
+                  </button>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('createUserForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const res = await fetch('/admin/users/create', { method: 'POST', body: new FormData(event.target) });
+  const data = await res.json();
+  showAlert(data.message || data.detail || 'Unable to create user.', res.ok ? 'success' : 'error');
+  if (res.ok) { event.target.reset(); setTimeout(() => location.reload(), 900); }
+});
+
+async function approveUser(id, username) {
+  if (!confirm(`Approve user "${username}"?`)) return;
+  const res = await fetch(`/admin/users/${id}/approve`, { method: 'POST' });
+  const data = await res.json();
+  showAlert(data.message, res.ok ? 'success' : 'error');
+  if (res.ok) setTimeout(() => location.reload(), 1200);
+}
+
+async function deactivateUser(id, username) {
+  if (!confirm(`Deactivate user "${username}"? They will not be able to log in.`)) return;
+  const res = await fetch(`/admin/users/${id}/deactivate`, { method: 'POST' });
+  const data = await res.json();
+  showAlert(data.message, res.ok ? 'success' : 'error');
+  if (res.ok) setTimeout(() => location.reload(), 1200);
+}
+
+function showAlert(msg, type) {
+  document.getElementById('alertBox').innerHTML =
+    `<div class="alert alert-${type}">${msg}</div>`;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}My Jobs{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  <div class="flex-between mb-2">
+    <div>
+      <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">📋 My Translations</div>
+      <div class="text-muted" style="font-size:0.85rem;">All your translation jobs — click a row to see details</div>
+    </div>
+    <a href="/dashboard" class="btn btn-primary">+ New Translation</a>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      {% if jobs %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>File / Content</th>
+              <th>Type</th>
+              <th>Languages</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for job in jobs %}
+            <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}">
+              <td>
+                <div style="font-weight:600;font-size:0.88rem;">
+                  {{ job.input_filename or 'Text translation' }}
+                </div>
+                {% if job.needs_review %}
+                <span class="review-flag">⚠ Needs review</span>
+                {% endif %}
+              </td>
+              <td>
+                <span style="text-transform:capitalize;font-size:0.82rem;">{{ job.job_type }}</span>
+              </td>
+              <td style="font-size:0.82rem;">
+                {{ languages.get(job.source_language, job.source_language or 'Auto') }}
+                → {{ languages.get(job.target_language, job.target_language) }}
+              </td>
+              <td>
+                <span class="badge badge-{{ job.status }}" id="badge-{{ job.id }}">
+                  {{ job.status | capitalize }}
+                </span>
+                {% if job.status == 'processing' %}
+                <div class="job-progress-bar" style="margin-top:4px;width:80px;">
+                  <div class="job-progress-fill" id="prog-{{ job.id }}" style="width:{{ job.progress }}%"></div>
+                </div>
+                {% endif %}
+              </td>
+              <td style="font-size:0.8rem;color:var(--text-muted);">
+                {{ job.created_at.strftime('%d %b %Y %H:%M') if job.created_at else '—' }}
+              </td>
+              <td>
+                <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                  {% if job.status == 'completed' %}
+                    {% if job.output_path %}
+                    <a href="/jobs/{{ job.id }}/download" class="btn btn-primary btn-sm">↓ File</a>
+                    {% endif %}
+                    {% if job.audio_output_path %}
+                    <a href="/jobs/{{ job.id }}/download/audio" class="btn btn-secondary btn-sm">↓ Audio</a>
+                    {% endif %}
+                    {% if job.subtitle_path %}
+                    <a href="/jobs/{{ job.id }}/download/subtitles" class="btn btn-secondary btn-sm">↓ SRT</a>
+                    {% endif %}
+                  {% elif job.status == 'failed' %}
+                    <span style="font-size:0.75rem;color:var(--danger);" title="{{ job.error_message }}">
+                      {{ (job.error_message or 'Unknown error')[:40] }}…
+                    </span>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div style="padding:3rem;text-align:center;color:var(--text-muted);">
+        No jobs yet. <a href="/dashboard">Start a translation →</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Poll any in-progress jobs
+document.querySelectorAll('[data-status="processing"],[data-status="queued"]').forEach(row => {
+  const jobId = row.dataset.jobId;
+  const interval = setInterval(async () => {
+    const res = await fetch(`/jobs/${jobId}/status`);
+    const data = await res.json();
+    const badge = document.getElementById('badge-' + jobId);
+    if (badge) {
+      badge.className = 'badge badge-' + data.status;
+      badge.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+    }
+    const prog = document.getElementById('prog-' + jobId);
+    if (prog) prog.style.width = data.progress + '%';
+    if (data.status === 'completed' || data.status === 'failed') {
+      clearInterval(interval);
+      setTimeout(() => location.reload(), 1000);
+    }
+  }, 3000);
+});
+</script>
+{% endblock %}

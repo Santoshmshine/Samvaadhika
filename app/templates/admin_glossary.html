@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Glossary{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+  <div class="flex-between mb-2">
+    <div>
+      <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">📖 Domain Glossary</div>
+      <div class="text-muted" style="font-size:0.85rem;">Agricultural &amp; BAIF-specific term overrides for consistent translation</div>
+    </div>
+    <a href="/admin/" class="btn btn-secondary btn-sm">← Admin home</a>
+  </div>
+
+  <div id="alertBox"></div>
+
+  <!-- Add entry form -->
+  <div class="panel" style="margin-bottom:1.25rem;">
+    <div class="panel-header">ADD NEW TERM</div>
+    <div class="panel-body">
+      <form id="addForm" onsubmit="addEntry(event)">
+        <div style="display:grid;grid-template-columns:1fr 120px 1fr 120px 140px auto;gap:0.75rem;align-items:end;">
+          <div>
+            <label class="form-label">Source Term</label>
+            <input class="form-control" name="source_term" placeholder="e.g. Watershed" required />
+          </div>
+          <div>
+            <label class="form-label">From</label>
+            <select class="form-control" name="source_language">
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name.split('(')[0].strip() }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Target Term</label>
+            <input class="form-control" name="target_term" placeholder="e.g. जलग्रहण क्षेत्र" required />
+          </div>
+          <div>
+            <label class="form-label">To</label>
+            <select class="form-control" name="target_language">
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name.split('(')[0].strip() }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Domain (optional)</label>
+            <input class="form-control" name="domain" placeholder="agriculture" />
+          </div>
+          <div>
+            <label class="form-label">&nbsp;</label>
+            <button type="submit" class="btn btn-primary">+ Add</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Entries table -->
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source Term</th>
+              <th>From</th>
+              <th>Target Term</th>
+              <th>To</th>
+              <th>Domain</th>
+              <th>Added</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="glossaryBody">
+            {% for e in entries %}
+            <tr id="entry-{{ e.id }}">
+              <td style="font-weight:600;">{{ e.source_term }}</td>
+              <td><span class="badge badge-queued">{{ e.source_language }}</span></td>
+              <td>{{ e.target_term }}</td>
+              <td><span class="badge badge-queued">{{ e.target_language }}</span></td>
+              <td style="font-size:0.8rem;color:var(--text-muted);">{{ e.domain or '—' }}</td>
+              <td style="font-size:0.78rem;color:var(--text-muted);">
+                {{ e.created_at.strftime('%d %b %Y') if e.created_at else '—' }}
+              </td>
+              <td>
+                <button class="btn btn-danger btn-sm" onclick="deleteEntry({{ e.id }})">✕</button>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem;">
+              No glossary entries yet.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function addEntry(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const res = await fetch('/admin/glossary/add', { method: 'POST', body: fd });
+  const data = await res.json();
+  if (res.ok) {
+    showAlert('Entry added successfully.', 'success');
+    setTimeout(() => location.reload(), 800);
+  } else {
+    showAlert(data.detail || 'Error adding entry.', 'error');
+  }
+}
+
+async function deleteEntry(id) {
+  if (!confirm('Delete this glossary entry?')) return;
+  const res = await fetch(`/admin/glossary/${id}`, { method: 'DELETE' });
+  if (res.ok) {
+    document.getElementById('entry-' + id).remove();
+    showAlert('Entry deleted.', 'success');
+  }
+}
+
+function showAlert(msg, type) {
+  document.getElementById('alertBox').innerHTML =
+    `<div class="alert alert-${type}">${msg}</div>`;
+}
+</script>
+{% endblock %}

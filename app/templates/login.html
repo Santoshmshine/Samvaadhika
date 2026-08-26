@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — Samvaadhika</title>
+  <link rel="stylesheet" href="/static/css/samvaadhika.css" />
+  <link rel="icon" type="image/png" href="/static/images/logo.png" />
+</head>
+<body>
+<div class="auth-page">
+  <div class="auth-card">
+
+    <div class="auth-logo">
+      <img src="/static/images/logo.png" alt="Samvaadhika" onerror="this.style.display='none'" />
+      <div class="auth-title">samvaadhika</div>
+      <div class="auth-sub">bridging BAIF's eLearning languages</div>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">⚠ {{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/auth/login">
+      <div class="form-group">
+        <label class="form-label" for="username">Username</label>
+        <input class="form-control" type="text" id="username" name="username"
+               placeholder="Enter your username" required autofocus />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input class="form-control" type="password" id="password" name="password"
+               placeholder="Enter your password" required />
+      </div>
+      <button type="submit" class="btn btn-primary btn-block btn-lg" style="margin-top:0.5rem;">
+        Sign In
+      </button>
+    </form>
+
+    <p class="text-center mt-2" style="font-size:0.85rem;color:var(--text-muted);">
+      New user? <a href="/auth/register">Request access</a>
+    </p>
+
+    <div style="margin-top:1.5rem;padding-top:1rem;border-top:1px solid var(--green-border);
+                text-align:center;font-size:0.72rem;color:var(--text-muted);">
+      🔒 Fully offline · No internet required · BAIF internal use only
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Translate Text{% endblock %}
+
+{% block content %}
+<div class="app-wrapper">
+
+  <div class="split-panel" style="grid-template-columns:1fr;">
+    <div class="panel">
+      <div class="panel-header">TEXT TRANSLATION</div>
+      <div class="panel-body">
+
+        <!-- Text translate panel -->
+        <div class="text-translate-grid">
+          <div>
+            <label class="form-label">Source text</label>
+            <textarea class="text-box" id="sourceText" placeholder="Type or paste text here…" oninput="onTextInput()" rows="8"></textarea>
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">
+              <span id="charCount">0</span> / 10,000 characters
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Translation</label>
+            <div class="result-box" id="translationResult" style="min-height:180px;">
+              <span class="result-placeholder">Translation will appear here…</span>
+            </div>
+            <div id="translationMeta" class="hidden" style="margin-top:0.4rem;font-size:0.75rem;color:var(--text-muted);display:flex;gap:0.75rem;align-items:center;">
+              <span id="detectedLangText"></span>
+              <span id="fromCacheTag" class="hidden" style="background:var(--green-pale);padding:1px 6px;border-radius:4px;color:var(--green-dark);font-weight:600;">cached</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:0.75rem;display:flex;gap:0.75rem;align-items:center;">
+          <select class="lang-select" id="textSourceLang" style="width:auto;min-width:140px;">
+            <option value="auto">Auto-detect</option>
+            {% for code, name in languages.items() %}
+            <option value="{{ code }}">{{ name }}</option>
+            {% endfor %}
+          </select>
+          <span style="color:var(--text-muted);">→</span>
+          <select class="lang-select" id="textTargetLang" style="width:auto;min-width:140px;">
+            {% for code, name in languages.items() %}
+            <option value="{{ code }}">{{ name }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn btn-primary" id="textTranslateBtn" onclick="translateText()" disabled>
+            Translate
+          </button>
+          <span class="spinner hidden" id="textSpinner"></span>
+        </div>
+
+        <div style="margin-top:1.5rem;text-align:center;">
+          <a href="/dashboard" class="btn btn-secondary btn-sm">← Back to Dashboard</a>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function onTextInput() {
+  const txt = document.getElementById('sourceText').value;
+  document.getElementById('charCount').textContent = txt.length;
+  document.getElementById('textTranslateBtn').disabled = txt.trim().length === 0;
+}
+
+async function translateText() {
+  const text = document.getElementById('sourceText').value.trim();
+  if (!text) return;
+  const src = document.getElementById('textSourceLang').value;
+  const tgt = document.getElementById('textTargetLang').value;
+  const spinner = document.getElementById('textSpinner');
+  const btn = document.getElementById('textTranslateBtn');
+  spinner.classList.remove('hidden');
+  btn.disabled = true;
+
+  const fd = new FormData();
+  fd.append('text', text);
+  fd.append('source_language', src);
+  fd.append('target_language', tgt);
+
+  try {
+    const res = await fetch('/translate/text', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Translation failed');
+    document.getElementById('translationResult').textContent = data.translated_text;
+    document.getElementById('detectedLangText').textContent =
+      'Detected: ' + (data.source_language_name || data.source_language);
+    document.getElementById('translationMeta').classList.remove('hidden');
+    if (data.from_cache) document.getElementById('fromCacheTag').classList.remove('hidden');
+    else document.getElementById('fromCacheTag').classList.add('hidden');
+  } catch(e) {
+    document.getElementById('translationResult').textContent = 'Error: ' + e.message;
+  } finally {
+    spinner.classList.add('hidden');
+    btn.disabled = false;
+  }
+}
+</script>
+{% endblock %}
