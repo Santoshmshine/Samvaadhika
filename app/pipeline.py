@@ -453,36 +453,16 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
         except Exception:
             logger.debug("Could not read safe_src vocab for diagnostics.")
 
+        tokenizer_loaded = False
         try:
             import importlib.util
-            # Prefer tokenization module shipped with the model snapshot (model_dir)
-            tok_path = Path(model_dir) / 'tokenization_indictrans.py'
-            if not tok_path.exists():
-                # Fallback: search HF modules cache
-                hf_cache = Path.home() / '.cache' / 'huggingface' / 'modules' / 'transformers_modules'
-                if hf_cache.exists():
-                    for root, dirs, files in os.walk(hf_cache):
-                        if 'tokenization_indictrans.py' in files:
-                            tok_path = Path(root) / 'tokenization_indictrans.py'
-                            break
-
-            if tok_path and tok_path.exists():
-                spec = importlib.util.spec_from_file_location('indictrans_local', str(tok_path))
+            # Prefer a safe local tokenizer module bundled with the project
+            safe_local = Path(__file__).resolve().parents[1] / 'build' / 'safe_tokenization_indictrans.py'
+            if safe_local.exists():
+                spec = importlib.util.spec_from_file_location('indictrans_local_safe', str(safe_local))
                 indic_mod = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(indic_mod)
-
-                def _patched_load_json(path: str):
-                    with open(path, 'r', encoding='utf-8') as f:
-                        d = json.load(f)
-                    new = {}
-                    for k, v in d.items():
-                        nk = k.replace('▁', '').strip().strip('"\'')
-                        new[nk] = v
-                        new[k] = v
-                    return new
-
                 if hasattr(indic_mod, 'IndicTransTokenizer'):
-                    indic_mod.IndicTransTokenizer._load_json = staticmethod(_patched_load_json)
                     TokClass = indic_mod.IndicTransTokenizer
                     tokenizer = TokClass(
                         src_vocab_fp=str(safe_src) if safe_src else str(src_vocab),
@@ -490,13 +470,52 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
                         src_spm_fp=str(Path(model_dir) / "model.SRC"),
                         tgt_spm_fp=str(Path(model_dir) / "model.TGT"),
                     )
-                    logger.info("Loaded IndicTransTokenizer via direct module import with patched JSON loader.")
+                    logger.info("Loaded local safe IndicTransTokenizer from build/safe_tokenization_indictrans.py")
+                    tokenizer_loaded = True
+
+            if not tokenizer_loaded:
+                # Prefer tokenization module shipped with the model snapshot (model_dir)
+                tok_path = Path(model_dir) / 'tokenization_indictrans.py'
+                if not tok_path.exists():
+                    # Fallback: search HF modules cache
+                    hf_cache = Path.home() / '.cache' / 'huggingface' / 'modules' / 'transformers_modules'
+                    if hf_cache.exists():
+                        for root, dirs, files in os.walk(hf_cache):
+                            if 'tokenization_indictrans.py' in files:
+                                tok_path = Path(root) / 'tokenization_indictrans.py'
+                                break
+
+                if tok_path and tok_path.exists():
+                    spec = importlib.util.spec_from_file_location('indictrans_local', str(tok_path))
+                    indic_mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(indic_mod)
+
+                    def _patched_load_json(path: str):
+                        with open(path, 'r', encoding='utf-8') as f:
+                            d = json.load(f)
+                        new = {}
+                        for k, v in d.items():
+                            nk = k.replace('▁', '').strip().strip('"\'')
+                            new[nk] = v
+                            new[k] = v
+                        return new
+
+                    if hasattr(indic_mod, 'IndicTransTokenizer'):
+                        indic_mod.IndicTransTokenizer._load_json = staticmethod(_patched_load_json)
+                        TokClass = indic_mod.IndicTransTokenizer
+                        tokenizer = TokClass(
+                            src_vocab_fp=str(safe_src) if safe_src else str(src_vocab),
+                            tgt_vocab_fp=str(safe_tgt) if safe_tgt else str(tgt_vocab),
+                            src_spm_fp=str(Path(model_dir) / "model.SRC"),
+                            tgt_spm_fp=str(Path(model_dir) / "model.TGT"),
+                        )
+                        logger.info("Loaded IndicTransTokenizer via direct module import with patched JSON loader.")
+                    else:
+                        logger.debug("tokenization_indictrans.py did not contain IndicTransTokenizer; falling back to AutoTokenizer default.")
+                        tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
                 else:
-                    logger.debug("tokenization_indictrans.py did not contain IndicTransTokenizer; falling back to AutoTokenizer default.")
+                    logger.debug("Could not locate tokenization_indictrans.py in HF modules cache; falling back to AutoTokenizer default.")
                     tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
-            else:
-                logger.debug("Could not locate tokenization_indictrans.py in HF modules cache; falling back to AutoTokenizer default.")
-                tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
         except Exception as e2:
             logger.exception(f"Direct tokenizer module load failed: {e2}; falling back to AutoTokenizer default.")
             # Final fallback: create a minimal tokenizer implementation that
@@ -573,7 +592,156 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
                 logger.exception(f"Minimal tokenizer fallback failed: {e3}")
                 tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
+    # Apply a compatibility shim: some remote model implementations call
+    # `tie_weights(recompute_mapping=...)` which older/newer transformers
+    # PreTrainedModel.tie_weights may not accept. Patch PreTrainedModel
+    # to silently accept and drop `recompute_mapping` for compatibility.
+    try:
+        import transformers.modeling_utils as _mu
+        if hasattr(_mu, 'PreTrainedModel'):
+            _orig_tie = getattr(_mu.PreTrainedModel, 'tie_weights', None)
+
+            def _tie_weights_compat(self, *args, **kwargs):
+                if _orig_tie is None:
+                    return None
+                kwargs.pop('recompute_mapping', None)
+                return _orig_tie(self, *args, **kwargs)
+
+            setattr(_mu.PreTrainedModel, 'tie_weights', _tie_weights_compat)
+            logger.info("Applied tie_weights compatibility shim to transformers.PreTrainedModel")
+    except Exception:
+        logger.debug("Failed to apply tie_weights shim")
+
+    # Try to patch modeling_indictrans if present so its tie_weights accepts
+    # the `recompute_mapping` kwarg which some transformers versions pass.
+    try:
+        import importlib.util
+        mod_path = Path(model_dir) / 'modeling_indictrans.py'
+        if not mod_path.exists():
+            # fallback: look in HF modules cache
+            hf_cache = Path.home() / '.cache' / 'huggingface' / 'modules' / 'transformers_modules'
+            if hf_cache.exists():
+                for root, dirs, files in os.walk(hf_cache):
+                    if 'modeling_indictrans.py' in files:
+                        mod_path = Path(root) / 'modeling_indictrans.py'
+                        break
+
+        if mod_path and mod_path.exists():
+            spec = importlib.util.spec_from_file_location('indictrans_modeling_local', str(mod_path))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            # If the module defines the IndicTrans model class, patch its tie_weights
+            cls = getattr(mod, 'IndicTransForConditionalGeneration', None)
+            if cls is not None and hasattr(cls, 'tie_weights'):
+                _orig = getattr(cls, 'tie_weights')
+
+                def _tie_weights_compat(self, *a, **kw):
+                    kw.pop('recompute_mapping', None)
+                    return _orig(self, *a, **kw)
+
+                setattr(cls, 'tie_weights', _tie_weights_compat)
+                logger.info('Patched IndicTransForConditionalGeneration.tie_weights to accept recompute_mapping')
+    except Exception:
+        logger.debug('Could not patch modeling_indictrans; proceeding to load model')
+
+    # Attempt to load the IndicTrans model implementation directly from the
+    # model snapshot and load weights manually. This avoids calling
+    # `from_pretrained(...)` which imports remote/model code that can behave
+    # differently inside a frozen exe and trigger signature mismatches.
+    model = None
+    try:
+        import importlib.util
+        spec = None
+        mod_path = Path(model_dir) / 'modeling_indictrans.py'
+        if not mod_path.exists():
+            # fallback: search HF modules cache
+            hf_cache = Path.home() / '.cache' / 'huggingface' / 'modules' / 'transformers_modules'
+            if hf_cache.exists():
+                for root, dirs, files in os.walk(hf_cache):
+                    if 'modeling_indictrans.py' in files:
+                        mod_path = Path(root) / 'modeling_indictrans.py'
+                        break
+
+        if mod_path.exists():
+            # Some snapshot model files use relative imports (e.g. `from .configuration_indictrans`).
+            # Importing them directly fails inside a frozen exe since there is no package
+            # context. Workaround: copy snapshot .py files to a temporary directory,
+            # rewrite relative imports to absolute, add that temp dir to sys.path,
+            # then import the modeling module from there.
+            import tempfile
+            import shutil
+
+            tempdir = Path(tempfile.mkdtemp(prefix='indictrans_pkg_'))
+            try:
+                for py in Path(model_dir).glob('*.py'):
+                    dst = tempdir / py.name
+                    text = py.read_text(encoding='utf-8')
+                    # rewrite simple relative imports 'from .name import' -> 'from name import'
+                    text = text.replace('from .', 'from ')
+                    text = text.replace('import .', 'import ')
+                    dst.write_text(text, encoding='utf-8')
+
+                # Ensure tempdir is importable
+                sys.path.insert(0, str(tempdir))
+                spec = importlib.util.spec_from_file_location('indictrans_modeling_local', str(tempdir / 'modeling_indictrans.py'))
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                cls = getattr(mod, 'IndicTransForConditionalGeneration', None)
+            except Exception:
+                # cleanup tempdir on failure
+                try:
+                    sys.path = [p for p in sys.path if p != str(tempdir)]
+                except Exception:
+                    pass
+                raise
+            if cls is not None:
+                # Patch tie_weights to accept recompute_mapping kwarg
+                if hasattr(cls, 'tie_weights'):
+                    _orig_tie = getattr(cls, 'tie_weights')
+
+                    def _tie_weights_compat(self, *a, **kw):
+                        kw.pop('recompute_mapping', None)
+                        return _orig_tie(self, *a, **kw)
+
+                    setattr(cls, 'tie_weights', _tie_weights_compat)
+
+                # Load config and instantiate
+                from transformers import AutoConfig
+                cfg = AutoConfig.from_pretrained(str(model_dir))
+                model = cls(cfg)
+
+                # Load weights from safetensors or pytorch_model.bin
+                weights_loaded = False
+                try:
+                    # safetensors (preferred)
+                    from safetensors.torch import load_file as load_safetensors
+                    sf = Path(model_dir) / 'pytorch_model.safetensors'
+                    if sf.exists():
+                        state = load_safetensors(str(sf))
+                        model.load_state_dict(state, strict=False)
+                        weights_loaded = True
+                except Exception:
+                    weights_loaded = False
+
+                if not weights_loaded:
+                    # Try PyTorch bin
+                    pb = Path(model_dir) / 'pytorch_model.bin'
+                    if pb.exists():
+                        import torch as _torch
+                        state = _torch.load(str(pb), map_location='cpu')
+                        # state may be a dict with 'state_dict' key
+                        if 'state_dict' in state:
+                            state = state['state_dict']
+                        model.load_state_dict(state, strict=False)
+                        weights_loaded = True
+
+                if not weights_loaded:
+                    logger.warning('Could not find safetensors or pytorch_model.bin in snapshot; falling back to AutoModelForSeq2SeqLM.from_pretrained')
+                    model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
+    except Exception as _e:
+        logger.exception(f'Failed to load IndicTrans model directly: {_e}; falling back to AutoModelForSeq2SeqLM.from_pretrained')
+        model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
+
     model.eval()
 
     tagged_text = f"{src_code} {tgt_code} {text}"
