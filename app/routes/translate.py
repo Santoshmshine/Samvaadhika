@@ -64,6 +64,7 @@ async def translate_text_api(
         Job.input_hash == content_hash,
         Job.status == "completed",
         Job.job_type == "text",
+        Job.confidence_score >= 0.7,
     ).first()
 
     if cached:

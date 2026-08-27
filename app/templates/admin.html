@@ -11,7 +11,6 @@
     <a href="/dashboard" class="btn btn-secondary btn-sm">← Back to app</a>
   </div>
 
-  <!-- Stats row -->
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-bottom:1.5rem;">
     <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;">
       <div style="font-size:2rem;font-weight:800;color:var(--green-dark);">{{ total_users }}</div>
@@ -32,6 +31,47 @@
     <div class="panel" style="text-align:center;padding:1.25rem 0.75rem;">
       <div style="font-size:2rem;font-weight:800;color:var(--danger);">{{ jobs_by_status.failed }}</div>
       <div class="text-muted" style="font-size:0.8rem;">Failed</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:1.5rem;">
+    <div class="panel">
+      <div class="panel-header">TRANSLATIONS BY LANGUAGE</div>
+      <div class="panel-body">
+        {% set language_max = jobs_by_language.values()|max if jobs_by_language else 1 %}
+        {% for code, name in languages.items() %}
+        <div class="metric-bar-row">
+          <div class="metric-bar-label"><span>{{ name }}</span><strong>{{ jobs_by_language.get(code, 0) }}</strong></div>
+          <div class="metric-bar-track"><div class="metric-bar-fill" style="width:{{ (jobs_by_language.get(code, 0) / language_max * 100) if language_max else 0 }}%;"></div></div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">TRANSLATIONS BY TYPE</div>
+      <div class="panel-body">
+        {% set type_max = jobs_by_type.values()|max if jobs_by_type else 1 %}
+        {% for job_type, count in jobs_by_type.items() %}
+        <div class="metric-bar-row">
+          <div class="metric-bar-label"><span>{{ job_type|title }}</span><strong>{{ count }}</strong></div>
+          <div class="metric-bar-track"><div class="metric-bar-fill metric-bar-alt" style="width:{{ (count / type_max * 100) if type_max else 0 }}%;"></div></div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">TOP USERS</div>
+      <div class="panel-body">
+        {% if translations_by_user %}
+          {% set user_max = translations_by_user[0][1] %}
+          {% for username, count in translations_by_user %}
+          <div class="metric-bar-row">
+            <div class="metric-bar-label"><span>{{ username }}</span><strong>{{ count }}</strong></div>
+            <div class="metric-bar-track"><div class="metric-bar-fill metric-bar-warm" style="width:{{ (count / user_max * 100) if user_max else 0 }}%;"></div></div>
+          </div>
+          {% endfor %}
+        {% else %}<div class="text-muted">No translation activity yet.</div>{% endif %}
+      </div>
     </div>
   </div>
 

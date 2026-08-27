@@ -86,6 +86,19 @@ Then open your browser at **http://localhost:8000**
 
 > **Change the admin password immediately after first login.**
 
+## Admin portal
+
+Sign in with an approved administrator account and open `/admin/`. The admin dashboard provides an all-time overview of:
+
+- Total users and pending registrations
+- Total translation jobs and job status counts
+- Translation usage by target language
+- Translation usage by type (`text`, `document`, `audio`, and `video`)
+- Top users by translation-job count
+- Recent audit activity
+
+Use `/admin/users` to manage accounts. Administrators can approve self-registered users, deactivate accounts, reset passwords, and create new users directly. Admin-created users are active and approved immediately. The create-user form supports the `user` and `admin` roles and requires a password of at least eight characters. Standard users can translate and view their own jobs but receive HTTP 403 for admin pages.
+
 ---
 
 ## AI model setup (download separately)
@@ -100,6 +113,27 @@ The app runs with stub/fallback translation out of the box. For full AI quality,
 | [fastText lid.176.ftz](https://fasttext.cc/docs/en/language-identification.html) | `models/lid.176.ftz` | Language detection |
 
 All models are MIT or Apache-2.0 licensed — free with no usage restrictions.
+
+### Download IndicTrans2
+
+`setup.bat` installs Python packages but does not download model checkpoints. From the project root, set your Hugging Face token in the current terminal and run the downloader:
+
+**macOS / Linux:**
+
+```bash
+read -s HF_TOKEN
+export HF_TOKEN
+.venv/bin/python models_scripts/indictrans2.py
+```
+
+**Windows:**
+
+```bat
+set HF_TOKEN=your-token-here
+venv\Scripts\python.exe models_scripts\indictrans2.py
+```
+
+The script downloads the complete `ai4bharat/indictrans2-en-indic-dist-200M` checkpoint into `models/indictrans2/`. Confirm that the directory contains `config.json`, tokenizer files, and model weight files before starting the application. Never commit or hardcode the token. If a token was exposed in a source file or terminal history, revoke it and create a replacement before continuing.
 
 ---
 
@@ -132,7 +166,7 @@ Samvaadhika/
 ├── data/                # SQLite database file (created at runtime)
 ├── uploads/             # Uploaded files (created at runtime)
 ├── outputs/             # Translated output files (created at runtime)
-├── cache/               # Content-hash dedup cache (created at runtime)
+├── cache/               # Content-hash and Hugging Face runtime cache
 └── models/              # AI model checkpoints (download separately)
 ```
 
@@ -150,11 +184,12 @@ Samvaadhika/
 | Auto language detection + manual override | MVP |
 | Async job queue with live status polling | MVP |
 | Content-hash dedup (never reprocess same file) | MVP |
-| Admin approval workflow for new users | MVP |
+| Admin dashboard with translation, language, type, status, and user metrics | MVP |
+| Admin user creation, approval, deactivation, and password reset | MVP |
 | Domain glossary (agricultural/BAIF terms) | MVP |
 | Audit log (who translated what and when) | MVP |
 | Standalone Windows .exe (no Python needed) | MVP |
-| PDF translation (text-native) | Best effort |
+| PDF translation (text-native, tables/grids preserved where detectable) | MVP |
 | Scanned PDF OCR (Tesseract) | Best effort |
 | XLSX / CSV translation | Stretch goal |
 | On-screen text in video (OCR) | Best effort |
@@ -175,7 +210,10 @@ Samvaadhika/
 
 | Task | Where |
 |---|---|
+| View translation metrics and recent activity | `/admin/` |
+| Create users and assign `user` or `admin` roles | `/admin/users` |
 | Approve new user accounts | `/admin/users` |
+| Deactivate users or reset passwords | `/admin/users` |
 | Add/remove domain glossary terms | `/admin/glossary` |
 | View audit log | `/admin/audit` |
 | Monitor / requeue failed jobs | `/admin/jobs` |
@@ -191,6 +229,14 @@ Edit [`app/config.py`](app/config.py) to change:
 - Whisper model size (`tiny` / `base` / `small` / `medium`)
 - Worker thread count
 - Default admin credentials (change before deployment)
+
+Hugging Face runtime files are cached under `cache/huggingface/` so the application can load local model code without relying on an inaccessible user-level cache. Set `SAMVAADHIKA_DEVANAGARI_FONT` to a `.ttf` or compatible font path when deploying on a machine without a usable Devanagari font.
+
+## PDF formatting behavior
+
+Text-native PDFs with detectable tables or text coordinates are translated into a new PDF that retains the original page size, table/grid geometry, and text placement. Hindi and Marathi text is rendered using a Devanagari-capable font. The output is stored as `translated_<name>.pdf` and can be downloaded from the Jobs page.
+
+For scanned or complex PDFs where usable coordinates cannot be recovered, the result may be marked for review and layout preservation may be incomplete. Tesseract with `eng`, `hin`, and `mar` language data is required for scanned-page OCR.
 
 ---
 

@@ -195,6 +195,23 @@ a:hover { color: var(--green-mid); text-decoration: underline; }
 }
 
 .panel-body { padding: 1.25rem; }
+.job-status-panel-body { padding: 0.5rem 1rem 1rem; }
+
+.metric-bar-row { margin-bottom: 0.9rem; }
+.metric-bar-row:last-child { margin-bottom: 0; }
+.metric-bar-label { display:grid;grid-template-columns:minmax(0,1fr) auto;width:100%;align-items:baseline;gap:0.75rem;font-size:0.8rem;margin-bottom:0.3rem; }
+.metric-bar-label span { min-width:0;overflow-wrap:anywhere; }
+.metric-bar-label strong { float:inline-end;float:right;justify-self:end;color:var(--green-dark);text-align:right; }
+.metric-bar-track { height:7px;background:var(--green-pale);border-radius:4px;overflow:hidden; }
+.metric-bar-fill { height:100%;min-width:2px;background:var(--green-mid);border-radius:4px; }
+.metric-bar-alt { background:var(--info); }
+.metric-bar-warm { background:var(--warning); }
+
+.admin-user-form { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.7rem; }
+.admin-user-form input,.admin-user-form select { width:100%;min-width:0; }
+@media (max-width: 640px) {
+  .admin-user-form { grid-template-columns:1fr; }
+}
 
 /* ================================================================
    DROP ZONE

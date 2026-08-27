@@ -13,6 +13,21 @@
 
   <div id="alertBox"></div>
 
+  <div class="panel" style="margin-bottom:1rem;">
+    <div class="panel-header">CREATE USER</div>
+    <div class="panel-body">
+      <form id="createUserForm" class="admin-user-form">
+        <input name="username" placeholder="Username" minlength="3" required />
+        <input name="full_name" placeholder="Full name" />
+        <input name="email" type="email" placeholder="Email" required />
+        <input name="password" type="password" placeholder="Initial password (8+ characters)" minlength="8" required />
+        <select name="role" aria-label="User role"><option value="user">Standard user</option><option value="admin">Admin</option></select>
+        <button class="btn btn-primary" type="submit">Create account</button>
+      </form>
+      <div class="text-muted" style="font-size:0.78rem;margin-top:0.6rem;">Admin-created accounts are active and approved immediately.</div>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="panel-body" style="padding:0;">
       <div class="table-wrap">
@@ -78,6 +93,14 @@
 
 {% block scripts %}
 <script>
+document.getElementById('createUserForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const res = await fetch('/admin/users/create', { method: 'POST', body: new FormData(event.target) });
+  const data = await res.json();
+  showAlert(data.message || data.detail || 'Unable to create user.', res.ok ? 'success' : 'error');
+  if (res.ok) { event.target.reset(); setTimeout(() => location.reload(), 900); }
+});
+
 async function approveUser(id, username) {
   if (!confirm(`Approve user "${username}"?`)) return;
   const res = await fetch(`/admin/users/${id}/approve`, { method: 'POST' });

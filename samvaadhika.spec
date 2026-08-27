@@ -176,6 +176,8 @@ hiddenimports = [
     "fasttext.util",
     # transformers onnx submodule needed by some HF configs
     "transformers.onnx",
+    "fitz",
+    "pymupdf",
 ]
 
 # Add all sqlalchemy submodules (dialects, etc.)
