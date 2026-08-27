@@ -487,34 +487,142 @@ def translate_pptx(input_path: Path, output_path: Path, source_lang: str, target
         raise
 
 
+def _insert_pdf_text(page, rect, text: str, font_path: Optional[Path], fontsize: float) -> bool:
+    """Render translated text as an image so Devanagari shaping works reliably."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+
+    scale = 3
+    width = max(1, int(rect.width * scale))
+    height = max(1, int(rect.height * scale))
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    font = None
+    if font_path:
+        try:
+            font = ImageFont.truetype(str(font_path), max(8, int(fontsize * scale)), index=0)
+        except Exception:
+            font = None
+    if font is None:
+        font = ImageFont.load_default()
+
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and draw.textbbox((0, 0), candidate, font=font)[2] > width - 8:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    if not lines:
+        return False
+
+    line_height = max(1, int(fontsize * scale * 1.15))
+    draw.multiline_text((4, 1), "\n".join(lines), font=font, fill="black", spacing=0)
+    stream = BytesIO()
+    image.save(stream, format="PNG")
+    page.insert_image(rect, stream=stream.getvalue(), overlay=True)
+    return True
+
+
 def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_lang: str, db) -> Tuple[bool, str]:
     """
-    Extract text from PDF, translate, and write a plain-text output.
+    Translate a PDF while preserving its page geometry and table/grid layout.
     Returns (success, notes).
     """
     try:
+        import fitz
         import pdfplumber
-        all_text = []
-        with pdfplumber.open(str(input_path)) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    all_text.append(text)
-                else:
-                    # Scanned page — try OCR
-                    if _tesseract_available():
-                        img = page.to_image(resolution=200).original
-                        import pytesseract
-                        ocr_text = pytesseract.image_to_string(img, lang=TESSERACT_LANGUAGES)
-                        all_text.append(ocr_text)
-                    else:
-                        all_text.append("[OCR not available for this page]")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        formatted_pages = 0
+        fallback_pages = 0
 
-        full_text = "\n\n".join(all_text)
-        translated, _ = translate_text(full_text, source_lang, target_lang)
-        translated = apply_glossary(translated, source_lang, target_lang, db)
-        output_path.write_text(translated, encoding="utf-8")
-        return True, "PDF translated to text (layout not preserved)"
+        # Prefer a system or deployment-provided Devanagari font for Hindi/Marathi.
+        font_candidates = [
+            os.environ.get("SAMVAADHIKA_DEVANAGARI_FONT", ""),
+            "/System/Library/Fonts/Kohinoor.ttc",
+            "/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc",
+            "C:/Windows/Fonts/mangal.ttf",
+        ]
+        font_path = next((Path(p) for p in font_candidates if p and Path(p).exists()), None)
+        formatted_doc = fitz.open(str(input_path))
+
+        with pdfplumber.open(str(input_path)) as pdf:
+            for page_number, source_page in enumerate(pdf.pages):
+                output_page = formatted_doc[page_number]
+                table_cells = []
+                for table in source_page.find_tables():
+                    table_cells.extend(cell for row in table.rows for cell in row.cells if cell)
+
+                if table_cells:
+                    translated_any = False
+                    for x0, top, x1, bottom in table_cells:
+                        cell_rect = fitz.Rect(x0, top, x1, bottom)
+                        cell_text = source_page.crop((x0, top, x1, bottom)).extract_text() or ""
+                        if not cell_text.strip():
+                            continue
+                        translated, _ = translate_text(cell_text, source_lang, target_lang)
+                        translated = apply_glossary(translated, source_lang, target_lang, db)
+                        words = output_page.get_text("words", clip=cell_rect)
+                        if words:
+                            text_rect = fitz.Rect(
+                                min(word[0] for word in words) - 1,
+                                min(word[1] for word in words) - 1,
+                                max(word[2] for word in words) + 1,
+                                max(word[3] for word in words) + 1,
+                            ) & cell_rect
+                            output_page.draw_rect(text_rect, color=None, fill=(1, 1, 1), overlay=True)
+                        translated_any = _insert_pdf_text(
+                            output_page,
+                            fitz.Rect(cell_rect.x0 + 2, cell_rect.y0 + 1, cell_rect.x1 - 2, cell_rect.y1 - 1),
+                            translated,
+                            font_path,
+                            max(5, min(10, (bottom - top) * 0.42)),
+                        ) or translated_any
+                    if translated_any:
+                        formatted_pages += 1
+                        continue
+
+                # For non-table text-native pages, preserve each text line's position.
+                words = source_page.extract_words(keep_blank_chars=True, use_text_flow=True)
+                lines = {}
+                for word in words:
+                    key = (round(word["top"], 1), round(word["bottom"], 1))
+                    lines.setdefault(key, []).append(word)
+                translated_any = False
+                for (top, bottom), line_words in lines.items():
+                    line_words.sort(key=lambda word: word["x0"])
+                    original = " ".join(word["text"] for word in line_words).strip()
+                    if not original:
+                        continue
+                    translated, _ = translate_text(original, source_lang, target_lang)
+                    translated = apply_glossary(translated, source_lang, target_lang, db)
+                    text_rect = fitz.Rect(
+                        min(word["x0"] for word in line_words), top,
+                        max(word["x1"] for word in line_words), bottom,
+                    )
+                    output_page.draw_rect(text_rect, color=None, fill=(1, 1, 1), overlay=True)
+                    translated_any = _insert_pdf_text(
+                        output_page,
+                        text_rect,
+                        translated,
+                        font_path,
+                        max(5, min(11, bottom - top)),
+                    ) or translated_any
+                if translated_any:
+                    formatted_pages += 1
+                else:
+                    fallback_pages += 1
+
+        if fallback_pages:
+            logger.warning("%d PDF page(s) had no coordinate-aware text; layout may be incomplete.", fallback_pages)
+        formatted_doc.save(str(output_path), garbage=4, deflate=True)
+        formatted_doc.close()
+        return True, f"PDF translated with layout preservation on {formatted_pages} page(s)."
     except Exception as e:
         logger.error(f"PDF translation failed: {e}")
         raise

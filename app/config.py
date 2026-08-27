@@ -19,6 +19,10 @@ TEMPLATES_DIR = BASE_DIR / "app" / "templates"
 for d in [DATA_DIR, UPLOADS_DIR, CACHE_DIR, OUTPUTS_DIR, MODELS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+HF_CACHE_DIR = CACHE_DIR / "huggingface"
+HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("HF_HOME", str(HF_CACHE_DIR))
+
 # Database
 DATABASE_URL = f"sqlite:///{DATA_DIR}/samvaadhika.db"
 

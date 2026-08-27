@@ -125,6 +125,8 @@ hiddenimports = [
     "docx",
     "pptx",
     "soundfile",
+    "fitz",
+    "pymupdf",
 ]
 
 # Add all sqlalchemy submodules (dialects, etc.)

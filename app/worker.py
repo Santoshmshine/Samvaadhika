@@ -262,10 +262,10 @@ def _process_document_job(job: Job, db):
         translate_pptx(input_path, out_path, src, job.target_language, db)
         job.output_path = str(out_path)
     elif ext == ".pdf":
-        out_path = job_out_dir / f"translated_{input_path.stem}.txt"
-        translate_pdf(input_path, out_path, src, job.target_language, db)
+        out_path = job_out_dir / f"translated_{input_path.stem}.pdf"
+        _, notes = translate_pdf(input_path, out_path, src, job.target_language, db)
         job.output_path = str(out_path)
-        job.review_notes = "PDF translated to plain text — layout not preserved."
+        job.review_notes = notes
     else:
         raise ValueError(f"Unsupported document type: {ext}")
 
