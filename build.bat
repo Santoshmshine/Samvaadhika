@@ -102,6 +102,53 @@ if not exist "dist\Samvaadhika\uploads" mkdir "dist\Samvaadhika\uploads"
 if not exist "dist\Samvaadhika\cache"   mkdir "dist\Samvaadhika\cache"
 if not exist "dist\Samvaadhika\outputs" mkdir "dist\Samvaadhika\outputs"
 
+REM -- Copy large runtime assets (models, ffmpeg, fonts, helper scripts)
+echo.
+echo  Copying models, ffmpeg, fonts (if present)...
+if exist "models" (
+    echo    Copying models to dist\Samvaadhika\models ...
+    xcopy /E /I /Y "models" "dist\Samvaadhika\models" >nul
+)
+if exist "ffmpeg" (
+    echo    Copying ffmpeg to dist\Samvaadhika\ffmpeg ...
+    xcopy /E /I /Y "ffmpeg" "dist\Samvaadhika\ffmpeg" >nul
+)
+if exist "fonts" (
+    echo    Copying fonts to dist\Samvaadhika\fonts ...
+    xcopy /E /I /Y "fonts" "dist\Samvaadhika\fonts" >nul
+)
+if exist "models_scripts" (
+    echo    Copying models_scripts to dist\Samvaadhika\models_scripts ...
+    xcopy /E /I /Y "models_scripts" "dist\Samvaadhika\models_scripts" >nul
+)
+
+REM -- If PyInstaller placed bundled data under an _internal folder,
+REM    move common asset folders up to the top-level dist\Samvaadhika\<folder>
+REM    Use robocopy /MOVE for a robust move of large files.
+if exist "dist\Samvaadhika\_internal" (
+    echo    Relocating assets from _internal -> top-level dist\Samvaadhika ...
+    for %%D in (models ffmpeg fonts) do (
+        if exist "dist\Samvaadhika\_internal\%%D" (
+            if not exist "dist\Samvaadhika\%%D" mkdir "dist\Samvaadhika\%%D"
+            robocopy "dist\Samvaadhika\_internal\%%D" "dist\Samvaadhika\%%D" /E /MOVE >nul
+            rd /S /Q "dist\Samvaadhika\_internal\%%D" 2>nul
+        )
+    )
+    rd /S /Q "dist\Samvaadhika\_internal" 2>nul
+)
+
+REM -- Ensure fastText language ID models (lid.176.*) are present at the
+REM    top-level models folder (used for language detection fallback).
+if exist "models" (
+    for %%F in (models\lid.176.*) do (
+        if exist "%%~fF" (
+            if not exist "dist\Samvaadhika\models" mkdir "dist\Samvaadhika\models"
+            echo    Copying fastText model %%~nxF to dist\Samvaadhika\models ...
+            copy /Y "%%~fF" "dist\Samvaadhika\models\" >nul
+        )
+    )
+)
+
 REM -- Copy the end-user installer --
 copy /y install.bat "dist\Samvaadhika\install.bat" >nul
 

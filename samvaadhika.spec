@@ -44,6 +44,33 @@ datas += collect_data_files("transformers", include_py_files=True)
 # sentencepiece data
 datas += collect_data_files("sentencepiece")
 
+# Helper: include an entire folder tree (models, ffmpeg, fonts) into datas
+from pathlib import Path
+def _add_tree(src: str, dest: str):
+    p = Path(src)
+    if not p.exists():
+        return []
+    items = []
+    for f in p.rglob('*'):
+        if f.is_file():
+            rel = f.relative_to(p)
+            # Skip __pycache__ compiled artifacts (avoid Python-version-specific .pyc files)
+            if '__pycache__' in rel.parts:
+                continue
+            # Datas expects dest to be a directory; provide the relative parent directory
+            dest_dir = Path(dest) / rel.parent
+            items.append((str(f), str(dest_dir)))
+    return items
+
+# Bundle models, ffmpeg binaries, and fonts so the onedir contains them
+datas += _add_tree('models', 'models')
+datas += _add_tree('ffmpeg', 'ffmpeg')
+datas += _add_tree('fonts', 'fonts')
+
+# Include our local safe tokenizer implementation and build helpers
+#datas += [ ("build/safe_tokenization_indictrans.py", "build/safe_tokenization_indictrans.py"),
+          # ("build/postbuild_harness.py", "build/postbuild_harness.py") ]
+
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
 # imported dynamically (e.g. via importlib, __import__, or string names).
@@ -146,7 +173,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["move_internal_assets.py"],
     excludes=[
         # Exclude packages not needed at runtime
         "matplotlib",
@@ -156,7 +183,6 @@ a = Analysis(
         "cv2",            # OpenCV — add back if video OCR is bundled
         "tkinter",
         "test",
-        "unittest",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
