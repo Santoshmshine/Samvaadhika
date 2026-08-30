@@ -67,6 +67,9 @@ datas += _add_tree('models', 'models')
 datas += _add_tree('ffmpeg', 'ffmpeg')
 datas += _add_tree('fonts', 'fonts')
 
+# Pillow (PIL) image support for PDF conversion
+datas += collect_data_files("PIL")
+
 # Include our local safe tokenizer implementation and build helpers
 #datas += [ ("build/safe_tokenization_indictrans.py", "build/safe_tokenization_indictrans.py"),
           # ("build/postbuild_harness.py", "build/postbuild_harness.py") ]
@@ -162,6 +165,7 @@ hiddenimports += collect_submodules("starlette")
 hiddenimports += collect_submodules("transformers")
 hiddenimports += collect_submodules("torch")
 hiddenimports += collect_submodules("faster_whisper")
+hiddenimports += collect_submodules("PIL")
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -179,7 +183,6 @@ a = Analysis(
         "matplotlib",
         "pandas",
         "scipy",
-        "PIL",            # Pillow — add back if OCR is bundled
         "cv2",            # OpenCV — add back if video OCR is bundled
         "tkinter",
         "test",
