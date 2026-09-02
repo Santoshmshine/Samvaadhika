@@ -134,7 +134,8 @@ if exist "dist\Samvaadhika\_internal" (
             rd /S /Q "dist\Samvaadhika\_internal\%%D" 2>nul
         )
     )
-    rd /S /Q "dist\Samvaadhika\_internal" 2>nul
+    REM Keep the remaining PyInstaller _internal files (python DLLs, libs).
+    REM Do NOT remove the entire _internal folder — it contains the Python runtime.
 )
 
 REM -- Ensure fastText language ID models (lid.176.*) are present at the

@@ -204,7 +204,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,           # compress with UPX if available (reduces size ~30%)
+    upx=False,           # disable UPX to avoid DLL/load issues on some systems
     console=True,       # keep console window so users can see startup progress
                         # change to False for a silent background service
     icon="app/static/images/logo.png",  # .ico preferred; .png accepted by newer PyInstaller
@@ -216,7 +216,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="Samvaadhika",
 )
