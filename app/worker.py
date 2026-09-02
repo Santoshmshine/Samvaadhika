@@ -171,8 +171,9 @@ def _process_audio_job(job: Job, db):
     job.progress = 70
     db.commit()
 
-    # Step 4: TTS
-    tts_path = job_out_dir / f"translated_audio.wav"
+    # Step 4: TTS — preserve input filename for the generated audio
+    input_base = Path(job.input_path).stem
+    tts_path = job_out_dir / f"translated_{input_base}.wav"
     full_translated = " ".join(s["text"] for s in translated_segments)
     synthesize_speech(full_translated, job.target_language, tts_path)
     job.audio_output_path = str(tts_path)
@@ -180,8 +181,8 @@ def _process_audio_job(job: Job, db):
     job.progress = 85
     db.commit()
 
-    # Step 5: Subtitles
-    srt_path = job_out_dir / "subtitles.srt"
+    # Step 5: Subtitles — preserve input filename for subtitle file
+    srt_path = job_out_dir / f"translated_{input_base}.srt"
     generate_subtitles(segments, translated_segments, srt_path)
     job.subtitle_path = str(srt_path)
     job.progress = 100
@@ -227,16 +228,17 @@ def _process_video_job(job: Job, db):
     full_translated = " ".join(s["text"] for s in translated_segments)
     job.output_text = full_translated
 
-    # Step 5: TTS (text-to-speech)
-    tts_path = job_out_dir / "translated_audio.wav"
+    # Step 5: TTS (text-to-speech) — preserve input filename
+    input_base = Path(job.input_path).stem
+    tts_path = job_out_dir / f"translated_{input_base}.wav"
     tts_ok = synthesize_speech(full_translated, job.target_language, tts_path)
     if tts_ok and tts_path.exists():
         job.audio_output_path = str(tts_path)
     job.progress = 85
     db.commit()
 
-    # Step 6: Subtitles
-    srt_path = job_out_dir / "subtitles.srt"
+    # Step 6: Subtitles — preserve input filename
+    srt_path = job_out_dir / f"translated_{input_base}.srt"
     generate_subtitles(segments, translated_segments, srt_path)
     if srt_path.exists():
         job.subtitle_path = str(srt_path)
@@ -262,7 +264,8 @@ def _process_document_job(job: Job, db):
         translate_pptx(input_path, out_path, src, job.target_language, db)
         job.output_path = str(out_path)
     elif ext == ".pdf":
-        out_path = job_out_dir / f"translated_{input_path.stem}.pdf"
+        # Preserve the original filename (including spaces and extension)
+        out_path = job_out_dir / f"translated_{input_path.name}"
         _, notes = translate_pdf(input_path, out_path, src, job.target_language, db)
         job.output_path = str(out_path)
         job.review_notes = notes

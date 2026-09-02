@@ -44,6 +44,36 @@ datas += collect_data_files("transformers", include_py_files=True)
 # sentencepiece data
 datas += collect_data_files("sentencepiece")
 
+# Helper: include an entire folder tree (models, ffmpeg, fonts) into datas
+from pathlib import Path
+def _add_tree(src: str, dest: str):
+    p = Path(src)
+    if not p.exists():
+        return []
+    items = []
+    for f in p.rglob('*'):
+        if f.is_file():
+            rel = f.relative_to(p)
+            # Skip __pycache__ compiled artifacts (avoid Python-version-specific .pyc files)
+            if '__pycache__' in rel.parts:
+                continue
+            # Datas expects dest to be a directory; provide the relative parent directory
+            dest_dir = Path(dest) / rel.parent
+            items.append((str(f), str(dest_dir)))
+    return items
+
+# Bundle models, ffmpeg binaries, and fonts so the onedir contains them
+datas += _add_tree('models', 'models')
+datas += _add_tree('ffmpeg', 'ffmpeg')
+datas += _add_tree('fonts', 'fonts')
+
+# Pillow (PIL) image support for PDF conversion
+datas += collect_data_files("PIL")
+
+# Include our local safe tokenizer implementation and build helpers
+#datas += [ ("build/safe_tokenization_indictrans.py", "build/safe_tokenization_indictrans.py"),
+          # ("build/postbuild_harness.py", "build/postbuild_harness.py") ]
+
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
 # imported dynamically (e.g. via importlib, __import__, or string names).
@@ -135,6 +165,7 @@ hiddenimports += collect_submodules("starlette")
 hiddenimports += collect_submodules("transformers")
 hiddenimports += collect_submodules("torch")
 hiddenimports += collect_submodules("faster_whisper")
+hiddenimports += collect_submodules("PIL")
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -146,17 +177,15 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["move_internal_assets.py"],
     excludes=[
         # Exclude packages not needed at runtime
         "matplotlib",
         "pandas",
         "scipy",
-        "PIL",            # Pillow — add back if OCR is bundled
         "cv2",            # OpenCV — add back if video OCR is bundled
         "tkinter",
         "test",
-        "unittest",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -175,7 +204,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,           # compress with UPX if available (reduces size ~30%)
+    upx=False,           # disable UPX to avoid DLL/load issues on some systems
     console=True,       # keep console window so users can see startup progress
                         # change to False for a silent background service
     icon="app/static/images/logo.png",  # .ico preferred; .png accepted by newer PyInstaller
@@ -187,7 +216,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="Samvaadhika",
 )

@@ -113,4 +113,80 @@ document.querySelectorAll('[data-status="processing"],[data-status="queued"]').f
   }, 3000);
 });
 </script>
+<!-- Job details modal -->
+<div id="jobDetailsModal" class="modal" style="display:none;">
+  <div class="modal-content" style="max-width:640px;padding:1rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h3 id="modalTitle">Job details</h3>
+      <button onclick="closeJobModal()" class="btn btn-secondary btn-sm">✕</button>
+    </div>
+    <div id="modalBody" style="margin-top:0.5rem;line-height:1.4rem;color:var(--text-muted);"></div>
+    <div style="margin-top:1rem;display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button id="cancelJobBtn" class="btn btn-danger btn-sm" style="display:none;">Cancel job</button>
+      <a id="downloadFileBtn" class="btn btn-primary btn-sm" style="display:none;">Download file</a>
+      <a id="downloadAudioBtn" class="btn btn-secondary btn-sm" style="display:none;">Download audio</a>
+      <a id="downloadSubsBtn" class="btn btn-secondary btn-sm" style="display:none;">Download SRT</a>
+    </div>
+  </div>
+</div>
+
+<script>
+function showJobModal(html) {
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('jobDetailsModal').style.display = 'block';
+}
+function closeJobModal() { document.getElementById('jobDetailsModal').style.display = 'none'; }
+
+async function loadJobDetails(jobId) {
+  const res = await fetch(`/jobs/${jobId}/status`);
+  if (!res.ok) return showToastGlobal('Could not load job details');
+  const data = await res.json();
+  const parts = [];
+  parts.push(`<div><strong>Job:</strong> ${data.id.slice(0,8)}…</div>`);
+  parts.push(`<div><strong>Input:</strong> ${data.input_filename || 'Text'}</div>`);
+  parts.push(`<div><strong>Type:</strong> ${data.job_type}</div>`);
+  parts.push(`<div><strong>Lang:</strong> ${data.source_language || 'Auto'} → ${data.target_language_name || data.target_language}</div>`);
+  parts.push(`<div><strong>Status:</strong> ${data.status}</div>`);
+  if (data.output_text) parts.push(`<div style="margin-top:0.5rem;"><strong>Preview:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;">${data.output_text}</div></div>`);
+  showJobModal(parts.join(''));
+
+  // Buttons
+  const cancelBtn = document.getElementById('cancelJobBtn');
+  const dlFile = document.getElementById('downloadFileBtn');
+  const dlAudio = document.getElementById('downloadAudioBtn');
+  const dlSubs = document.getElementById('downloadSubsBtn');
+  cancelBtn.style.display = (data.status === 'queued' || data.status === 'processing') ? 'inline-block' : 'none';
+  dlFile.style.display = data.has_output_file ? 'inline-block' : 'none';
+  dlAudio.style.display = data.has_audio ? 'inline-block' : 'none';
+  dlSubs.style.display = data.has_subtitles ? 'inline-block' : 'none';
+
+  dlFile.href = `/jobs/${jobId}/download`;
+  dlAudio.href = `/jobs/${jobId}/download/audio`;
+  dlSubs.href = `/jobs/${jobId}/download/subtitles`;
+
+  cancelBtn.onclick = async () => {
+    if (!confirm('Cancel this job?')) return;
+    const r = await fetch(`/jobs/${jobId}`, { method: 'DELETE' });
+    if (r.ok) {
+      showToastGlobal('Job cancelled', 2000);
+      closeJobModal();
+      setTimeout(() => location.reload(), 800);
+    } else {
+      const err = await r.json().catch(()=>({detail:'Failed'}));
+      showToastGlobal(err.detail || 'Cancel failed');
+    }
+  };
+}
+
+// Attach click handlers to job rows
+document.querySelectorAll('tr[data-job-id]').forEach(row => {
+  row.style.cursor = 'pointer';
+  row.addEventListener('click', (e) => {
+    // don't trigger when clicking an action link/button
+    if (e.target.closest('a') || e.target.closest('button')) return;
+    const id = row.dataset.jobId;
+    loadJobDetails(id);
+  });
+});
+</script>
 {% endblock %}

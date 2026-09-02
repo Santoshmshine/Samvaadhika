@@ -21,7 +21,7 @@ from typing import Optional, Tuple
 from app.config import (
     CACHE_DIR, OUTPUTS_DIR, UPLOADS_DIR, MODELS_DIR,
     WHISPER_MODEL_SIZE, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE,
-    TESSERACT_LANGUAGES, SUPPORTED_LANGUAGES,
+    TESSERACT_LANGUAGES, SUPPORTED_LANGUAGES, BASE_DIR,
 )
 
 logger = logging.getLogger("samvaadhika.pipeline")
@@ -490,6 +490,7 @@ def translate_pptx(input_path: Path, output_path: Path, source_lang: str, target
 def _insert_pdf_text(page, rect, text: str, font_path: Optional[Path], fontsize: float) -> bool:
     """Render translated text as an image so Devanagari shaping works reliably."""
     from io import BytesIO
+    import fitz
     from PIL import Image, ImageDraw, ImageFont
 
     scale = 3
@@ -522,10 +523,32 @@ def _insert_pdf_text(page, rect, text: str, font_path: Optional[Path], fontsize:
         return False
 
     line_height = max(1, int(fontsize * scale * 1.15))
+    # Compute required image height for all lines and expand image if needed
+    padding_px = 6
+    required_height = len(lines) * line_height + padding_px
+    if required_height > height:
+        # create a taller image and copy existing white background
+        new_image = Image.new("RGB", (width, required_height), "white")
+        new_image.paste(image, (0, 0))
+        image = new_image
+        draw = ImageDraw.Draw(image)
+
     draw.multiline_text((4, 1), "\n".join(lines), font=font, fill="black", spacing=0)
     stream = BytesIO()
     image.save(stream, format="PNG")
-    page.insert_image(rect, stream=stream.getvalue(), overlay=True)
+    # If we expanded the image height, map the image back to a taller rect on the page
+    if image.height != height:
+        # compute new rect height in page coordinate space
+        new_height_pts = image.height / scale
+        new_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + new_height_pts)
+        # ensure we don't overflow the page bottom
+        page_bottom = page.rect.y1
+        if new_rect.y1 > page_bottom:
+            shift_up = new_rect.y1 - page_bottom
+            new_rect = fitz.Rect(new_rect.x0, max(rect.y0 - shift_up, page.rect.y0), new_rect.x1, page_bottom)
+        page.insert_image(new_rect, stream=stream.getvalue(), overlay=True)
+    else:
+        page.insert_image(rect, stream=stream.getvalue(), overlay=True)
     return True
 
 
@@ -548,7 +571,22 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
             "/System/Library/Fonts/Supplemental/Devanagari Sangam MN.ttc",
             "C:/Windows/Fonts/mangal.ttf",
         ]
+        # Also prefer any fonts bundled with the application under BASE_DIR/fonts
+        bundled_fonts_dir = BASE_DIR / "fonts"
+        if bundled_fonts_dir.exists():
+            # Prefer explicit known names first
+            for candidate_name in ("NotoSansDevanagari-Regular.ttf", "mangal.ttf", "NotoSansDevanagari.ttc"):
+                candidate = bundled_fonts_dir / candidate_name
+                if candidate.exists():
+                    font_candidates.insert(0, str(candidate))
+            # Otherwise, add any ttf/ttc in the bundled fonts folder
+            for f in bundled_fonts_dir.iterdir():
+                if f.suffix.lower() in (".ttf", ".ttc"):
+                    font_candidates.append(str(f))
+
         font_path = next((Path(p) for p in font_candidates if p and Path(p).exists()), None)
+        if font_path:
+            logger.info(f"Using Devanagari font: {font_path}")
         formatted_doc = fitz.open(str(input_path))
 
         with pdfplumber.open(str(input_path)) as pdf:

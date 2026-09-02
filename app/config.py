@@ -3,10 +3,17 @@ Samvaadhika - Configuration
 All settings for the offline multilingual translation platform.
 """
 import os
+import sys
 from pathlib import Path
 
 # Base directories
-BASE_DIR = Path(__file__).resolve().parent.parent
+# When running as a PyInstaller-frozen app, prefer the extracted
+# runtime folder (`sys._MEIPASS`) so bundled data (models, ffmpeg)
+# are found under the executable directory.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 UPLOADS_DIR = BASE_DIR / "uploads"
 CACHE_DIR = BASE_DIR / "cache"
