@@ -213,17 +213,22 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
     Returns (translated_text, confidence_score 0-1).
     """
     if source_lang == target_lang:
+        logger.info(f"translate_text: source==target ({source_lang}); skipping MT")
         return text, 1.0
 
     # Try IndicTrans2 first
     try:
-        return _translate_indictrans2(text, source_lang, target_lang)
+        res = _translate_indictrans2(text, source_lang, target_lang)
+        logger.info("translate_text: used IndicTrans2")
+        return res
     except Exception as e:
         logger.warning(f"IndicTrans2 unavailable ({e}), trying argostranslate fallback.")
 
     # Argostranslate fallback
     try:
-        return _translate_argos(text, source_lang, target_lang)
+        res = _translate_argos(text, source_lang, target_lang)
+        logger.info("translate_text: used ArgosTranslate fallback")
+        return res
     except Exception as e:
         logger.warning(f"argostranslate unavailable ({e}). Returning stub translation.")
 
@@ -402,7 +407,16 @@ def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     engine = pyttsx3.init()
     engine.save_to_file(text, str(output_path))
     engine.runAndWait()
-    return True
+    # Verify output file was written and has non-trivial size
+    try:
+        if output_path.exists() and output_path.stat().st_size > 1024:
+            return True
+        else:
+            logger.warning(f"pyttsx3 produced empty or tiny audio file: {output_path}")
+            return False
+    except Exception as e:
+        logger.warning(f"pyttsx3 verification failed: {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------

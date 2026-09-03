@@ -151,6 +151,10 @@ async def upload_file(
         job_type = "document"
         max_mb = MAX_DOCUMENT_SIZE_MB
 
+    # For large audio/video files disable server-side auto-detect: require explicit source language
+    if job_type in ("audio", "video") and source_language == "auto":
+        raise HTTPException(400, "Please select the source language for audio/video uploads (auto-detect disabled).")
+
     # Save upload
     upload_path = UPLOADS_DIR / f"{user.id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file.filename}"
     content = await file.read()

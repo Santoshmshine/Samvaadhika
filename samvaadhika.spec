@@ -67,6 +67,9 @@ datas += _add_tree('models', 'models')
 datas += _add_tree('ffmpeg', 'ffmpeg')
 datas += _add_tree('fonts', 'fonts')
 
+# Include faster_whisper package data (VAD/ONNX assets used at runtime)
+datas += collect_data_files("faster_whisper")
+
 # Pillow (PIL) image support for PDF conversion
 datas += collect_data_files("PIL")
 
