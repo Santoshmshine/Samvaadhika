@@ -67,9 +67,6 @@ datas += _add_tree('models', 'models')
 datas += _add_tree('ffmpeg', 'ffmpeg')
 datas += _add_tree('fonts', 'fonts')
 
-# Pillow (PIL) image support for PDF conversion
-datas += collect_data_files("PIL")
-
 # Include our local safe tokenizer implementation and build helpers
 #datas += [ ("build/safe_tokenization_indictrans.py", "build/safe_tokenization_indictrans.py"),
           # ("build/postbuild_harness.py", "build/postbuild_harness.py") ]
@@ -77,6 +74,7 @@ datas += collect_data_files("PIL")
 # ── Hidden imports ────────────────────────────────────────────────────────────
 # Modules that PyInstaller's static analysis misses because they are
 # imported dynamically (e.g. via importlib, __import__, or string names).
+# (Moved Parler-TTS / SciPy bundling after hiddenimports declaration)
 
 hiddenimports = [
     # FastAPI / Starlette internals
@@ -167,7 +165,56 @@ hiddenimports += collect_submodules("torch")
 hiddenimports += collect_submodules("faster_whisper")
 hiddenimports += collect_submodules("PIL")
 
+# Additional runtime modules often missed by static analysis
+hiddenimports += [
+    "onnxruntime",
+    "onnx",
+    "fasttext",
+    "onnxruntime.capi",
+    "onnxruntime.capi.onnxruntime_pybind11_state",
+]
+
+# Ensure native/packaged assets and runtime packages are collected
+datas += collect_data_files("onnxruntime")
+datas += collect_data_files("onnx")
+datas += collect_data_files("fasttext")
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
+
+# Ensure Parler-TTS and SciPy are bundled (Parler-TTS requires SciPy + compiled extensions)
+datas += collect_data_files("scipy")
+datas += collect_data_files("parler_tts")
+hiddenimports += collect_submodules("parler_tts")
+hiddenimports += ["parler_tts"]
+# Include faster_whisper package data (VAD/ONNX assets used at runtime)
+datas += collect_data_files("faster_whisper")
+
+# If PyInstaller misses specific ONNX or model files, explicitly include them.
+# Look for ONNX assets under the installed faster_whisper package and for
+# fastText language-id models under the local `models/` folder and add them
+# to datas so they land in the onedir next to the exe.
+try:
+    import faster_whisper
+    from pathlib import Path
+    fw_pkg_dir = Path(faster_whisper.__file__).parent
+    assets_dir = fw_pkg_dir / "assets"
+    if assets_dir.exists():
+        for onnx in assets_dir.rglob("*.onnx"):
+            # place under faster_whisper/assets in the dist
+            datas.append((str(onnx), str(Path("faster_whisper") / "assets" / onnx.parent.relative_to(assets_dir))))
+except Exception:
+    # best-effort: continue if package not installed in build env
+    pass
+
+# Include any local fastText LID models (common names: lid.*) from repo `models/`
+try:
+    from pathlib import Path
+    repo_models = Path("models")
+    if repo_models.exists():
+        for lid in repo_models.rglob("lid.*"):
+            datas.append((str(lid), "models"))
+except Exception:
+    pass
 
 a = Analysis(
     ["launcher.py"],
@@ -182,7 +229,6 @@ a = Analysis(
         # Exclude packages not needed at runtime
         "matplotlib",
         "pandas",
-        "scipy",
         "cv2",            # OpenCV — add back if video OCR is bundled
         "tkinter",
         "test",

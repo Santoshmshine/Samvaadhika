@@ -18,21 +18,24 @@ def _relocate():
         if not internal.exists():
             return
 
-        for name in ("models", "ffmpeg", "fonts"):
+        for name in ("models", "ffmpeg", "fonts", "faster_whisper"):
             src = internal / name
             dst = base / name
             if not src.exists():
                 continue
             # Ensure destination exists
             dst.mkdir(parents=True, exist_ok=True)
-            # Move every item from src into dst (merge)
+            # Copy every item from src into dst (merge). We copy instead of move
+            # to keep the original `_internal` layout intact — some libraries
+            # may resolve asset paths to the `_internal` location at runtime.
             for item in src.iterdir():
                 try:
                     target = dst / item.name
                     if item.is_dir():
+                        # remove existing target to avoid stale files, then copy
                         if target.exists():
                             shutil.rmtree(target)
-                        shutil.move(str(item), str(target))
+                        shutil.copytree(str(item), str(target))
                     else:
                         # overwrite if exists
                         if target.exists():
@@ -40,7 +43,7 @@ def _relocate():
                                 target.unlink()
                             except Exception:
                                 pass
-                        shutil.move(str(item), str(target))
+                        shutil.copy2(str(item), str(target))
                 except Exception:
                     # best-effort; don't raise in runtime hook
                     continue
