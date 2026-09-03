@@ -18,7 +18,7 @@ def _relocate():
         if not internal.exists():
             return
 
-        for name in ("models", "ffmpeg", "fonts", "faster_whisper"):
+        for name in ("models", "ffmpeg", "fonts", "faster_whisper", "audiotools", "parler_tts"):
             src = internal / name
             dst = base / name
             if not src.exists():

@@ -194,6 +194,8 @@ hiddenimports += collect_submodules("parler_tts")
 hiddenimports += ["parler_tts"]
 # Include faster_whisper package data (VAD/ONNX assets used at runtime)
 datas += collect_data_files("faster_whisper")
+# Ensure audiotools templates/assets required by Parler-TTS are bundled
+datas += collect_data_files("audiotools")
 
 # If PyInstaller misses specific ONNX or model files, explicitly include them.
 # Look for ONNX assets under the installed faster_whisper package and for
@@ -222,6 +224,35 @@ try:
 except Exception:
     pass
 
+# Ensure parler_tts package source files are bundled (TorchScript needs .py source access)
+try:
+    import parler_tts
+    from pathlib import Path
+    pt_pkg_dir = Path(parler_tts.__file__).parent
+    if pt_pkg_dir.exists():
+        for f in pt_pkg_dir.rglob('*'):
+            if f.is_file():
+                if '__pycache__' in f.parts:
+                    continue
+                rel = f.relative_to(pt_pkg_dir)
+                datas.append((str(f), str(Path('parler_tts') / rel.parent)))
+except Exception:
+    pass
+
+# Explicitly include audiotools templates used by Parler-TTS
+try:
+    import audiotools
+    from pathlib import Path
+    at_pkg_dir = Path(audiotools.__file__).parent
+    templates = at_pkg_dir / 'core' / 'templates'
+    if templates.exists():
+        for f in templates.rglob('*'):
+            if f.is_file():
+                rel = f.relative_to(at_pkg_dir)
+                datas.append((str(f), str(Path('audiotools') / rel.parent)))
+except Exception:
+    pass
+
 a = Analysis(
     ["launcher.py"],
     pathex=["."],
@@ -242,7 +273,7 @@ a = Analysis(
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
-    noarchive=False,
+    noarchive=True,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
