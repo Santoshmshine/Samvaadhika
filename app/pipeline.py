@@ -431,6 +431,9 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             torch.jit.script = _noop_jit
         if _orig_jit_trace is not None:
             torch.jit.trace = _noop_jit
+    except Exception:
+        # best-effort monkeypatch; continue even if patching fails
+        pass
 
     model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
     if model_dir is None:

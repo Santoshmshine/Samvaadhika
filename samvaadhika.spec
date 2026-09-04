@@ -66,6 +66,8 @@ def _add_tree(src: str, dest: str):
 datas += _add_tree('models', 'models')
 datas += _add_tree('ffmpeg', 'ffmpeg')
 datas += _add_tree('fonts', 'fonts')
+# Ensure the local `app` package source files are copied into the onedir
+datas += _add_tree('app', 'app')
 
 # Include faster_whisper package data (VAD/ONNX assets used at runtime)
 datas += collect_data_files("faster_whisper")
