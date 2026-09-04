@@ -11,15 +11,15 @@ echo  Open your browser at:  http://localhost:8000
 echo  Press Ctrl+C to stop.
 echo.
 
-REM Start FastAPI with the project virtual environment explicitly.
-REM Avoid relying on shell activation, which can select system Python.
-if not exist "venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found. Run setup.bat first.
-    pause
-    exit /b 1
+REM Activate virtual environment
+if exist "venv\Scripts\activate.bat" (
+    call venv\Scripts\activate.bat
+) else (
+    echo [WARNING] Virtual environment not found. Run setup.bat first.
+    echo           Trying system Python...
 )
 
 REM Start FastAPI with Uvicorn
-venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 pause
