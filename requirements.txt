@@ -46,7 +46,7 @@ pysubs2==1.7.3
 ffmpeg-python==0.2.0
 
 # ── Machine Translation (IndicTrans2) ──────────────────────────────────────
-transformers>=4.40.0
+transformers>=4.40.0,<5.0.0
 torch>=2.0.0
 sentencepiece>=0.2.0
 sacremoses>=0.1.1
