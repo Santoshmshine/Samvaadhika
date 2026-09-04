@@ -413,15 +413,9 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
     import torch
-    from parler_tts import ParlerTTSForConditionalGeneration
-    from transformers import AutoTokenizer
-    import soundfile as sf
-
     # Workaround: disable TorchScript compilation (monkeypatch torch.jit.script/trace)
-    # Some frozen/onedir builds prevent TorchScript from reading original .py sources
-    # and cause errors like: "Can't get source for <function ...>. TorchScript requires source access".
-    # Temporarily replace torch.jit.script and torch.jit.trace with no-ops so parler_tts
-    # doesn't attempt to compile to TorchScript at load/generation time.
+    # Apply monkeypatch BEFORE importing `parler_tts` so any TorchScript attempts
+    # during module import are no-ops.
     _orig_jit_script = getattr(torch.jit, "script", None)
     _orig_jit_trace = getattr(torch.jit, "trace", None)
     def _noop_jit(x, *a, **k):
@@ -432,8 +426,23 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         if _orig_jit_trace is not None:
             torch.jit.trace = _noop_jit
     except Exception:
-        # best-effort monkeypatch; continue even if patching fails
         pass
+
+    # Now import parler_tts and related modules (monkeypatched)
+    try:
+        from parler_tts import ParlerTTSForConditionalGeneration
+        from transformers import AutoTokenizer
+        import soundfile as sf
+    except Exception as e:
+        # Restore torch.jit before re-raising
+        try:
+            if _orig_jit_script is not None:
+                torch.jit.script = _orig_jit_script
+            if _orig_jit_trace is not None:
+                torch.jit.trace = _orig_jit_trace
+        except Exception:
+            pass
+        raise
 
     model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
     if model_dir is None:
