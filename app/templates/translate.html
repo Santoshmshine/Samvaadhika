@@ -34,13 +34,13 @@
           <select class="lang-select" id="textSourceLang" style="width:auto;min-width:140px;">
             <option value="auto">Auto-detect</option>
             {% for code, name in languages.items() %}
-            <option value="{{ code }}">{{ name }}</option>
+            <option value="{{ code }}" {% if code == 'en' %}selected{% endif %}>{{ name }}</option>
             {% endfor %}
           </select>
           <span style="color:var(--text-muted);">→</span>
           <select class="lang-select" id="textTargetLang" style="width:auto;min-width:140px;">
             {% for code, name in languages.items() %}
-            <option value="{{ code }}">{{ name }}</option>
+            <option value="{{ code }}" {% if code == 'hi' %}selected{% endif %}>{{ name }}</option>
             {% endfor %}
           </select>
           <button class="btn btn-primary" id="textTranslateBtn" onclick="translateText()" disabled>
