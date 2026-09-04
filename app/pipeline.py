@@ -437,11 +437,16 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
+    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed.
+
+    This function applies a temporary monkeypatch to `torch.jit.script` and
+    `torch.jit.trace` to avoid TorchScript attempting to read source files
+    from the frozen onedir. It then imports `parler_tts`, loads the model,
+    generates audio, writes debug artifacts, and restores the original JIT
+    functions in a finally block.
+    """
     import torch
-    # Workaround: disable TorchScript compilation (monkeypatch torch.jit.script/trace)
-    # Apply monkeypatch BEFORE importing `parler_tts` so any TorchScript attempts
-    # during module import are no-ops.
+    # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
     _orig_jit_trace = getattr(torch.jit, "trace", None)
     def _noop_jit(x, *a, **k):
@@ -454,43 +459,73 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     except Exception:
         pass
 
-    # Now import parler_tts and related modules (monkeypatched)
     try:
+        # Import third-party modules while JIT is disabled
         from parler_tts import ParlerTTSForConditionalGeneration
         from transformers import AutoTokenizer
         import soundfile as sf
-    except Exception as e:
-        # Restore torch.jit before re-raising
-        try:
-            if _orig_jit_script is not None:
-                torch.jit.script = _orig_jit_script
-            if _orig_jit_trace is not None:
-                torch.jit.trace = _orig_jit_trace
-        except Exception:
-            pass
-        raise
 
-    model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
-    if model_dir is None:
-        raise FileNotFoundError(
-            "Parler-TTS model not found. Expected at models/indic-parler-tts/"
-        )
+        model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
+        if model_dir is None:
+            raise FileNotFoundError(
+                "Parler-TTS model not found. Expected at models/indic-parler-tts/"
+            )
 
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-    model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
-    model.eval()
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
+        model.eval()
 
-    description = "A female speaker delivers a clear, natural voice."
-    input_ids = tokenizer(description, return_tensors="pt").input_ids
-    prompt_ids = tokenizer(text, return_tensors="pt").input_ids
+        description = "A female speaker delivers a clear, natural voice."
+        input_ids = tokenizer(description, return_tensors="pt").input_ids
+        prompt_ids = tokenizer(text, return_tensors="pt").input_ids
 
-    with torch.no_grad():
-        generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
+        with torch.no_grad():
+            generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
+            # Debug logging and artifact dump (sequential, isolated try/except blocks)
+            sr = getattr(model.config, "sampling_rate", None)
+            logger.info(f"Parler-TTS model sampling_rate: {sr}")
 
-    try:
-        audio = generation.cpu().numpy().squeeze()
-        sf.write(str(output_path), audio, model.config.sampling_rate)
-        return True
+            audio = None
+            try:
+                gen_np = generation.cpu().numpy()
+                logger.info(f"Parler-TTS generation raw shape: {getattr(gen_np, 'shape', 'unknown')}")
+                try:
+                    audio = gen_np.squeeze()
+                    if sr:
+                        duration = audio.shape[-1] / float(sr)
+                        logger.info(f"Parler-TTS generated audio duration: {duration:.2f}s")
+                except Exception as _e:
+                    logger.debug(f"Failed to process generation ndarray: {_e}")
+            except Exception as _e:
+                logger.debug(f"Failed to inspect generation ndarray: {_e}")
+
+            try:
+                debug_dir = BASE_DIR / "debug_parler"
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                if audio is not None:
+                    try:
+                        import numpy as _np
+                        fname = debug_dir / f"parler_{sha256_text(text)[:8]}.npy"
+                        _np.save(str(fname), audio)
+                    except Exception as _e:
+                        logger.debug(f"Failed to save parler npy debug: {_e}")
+                    try:
+                        if sr:
+                            sf.write(str(debug_dir / f"parler_{sha256_text(text)[:8]}.wav"), audio, sr)
+                    except Exception as _e:
+                        logger.debug(f"Failed to write parler debug wav: {_e}")
+            except Exception as _e:
+                logger.debug(f"Parler-TTS debug artifact save failed: {_e}")
+
+            # Write final output file used by the application
+            try:
+                if audio is None:
+                    audio = generation.cpu().numpy().squeeze()
+                sf.write(str(output_path), audio, getattr(model.config, "sampling_rate", 44100))
+                return True
+            except Exception as _e:
+                logger.error(f"Failed to write Parler-TTS output file: {_e}")
+                raise
     finally:
         # Restore original torch.jit functions
         try:
