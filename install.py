@@ -251,7 +251,7 @@ print("="*80)
 
     # Write script to temporary file
     temp_script = Path("_download_models_temp.py")
-    temp_script.write_text(download_script)
+    temp_script.write_text(download_script, encoding="utf-8")
 
     try:
         # Run the download script
@@ -307,7 +307,7 @@ else:
 """
 
     temp_script = Path("_verify_temp.py")
-    temp_script.write_text(verification_script)
+    temp_script.write_text(verification_script, encoding="utf-8")
 
     try:
         result = subprocess.run(
@@ -335,7 +335,7 @@ except Exception as e:
 """
 
     temp_script = Path("_init_db_temp.py")
-    temp_script.write_text(db_script)
+    temp_script.write_text(db_script, encoding="utf-8")
 
     try:
         subprocess.run(
