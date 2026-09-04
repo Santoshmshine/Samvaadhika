@@ -231,18 +231,18 @@ for hf_id, local_dir in models:
 
 detector_path = "models/lid.176.ftz"
 if os.path.exists(detector_path):
-    print("✅ fastText language detector already available\n")
+    print("✅ fastText language detector already available\\n")
 else:
-    print("📥 Downloading fastText language detector...\n")
+    print("📥 Downloading fastText language detector...\\n")
     try:
         urllib.request.urlretrieve(
             "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz",
             detector_path,
         )
-        print("✅ fastText language detector downloaded\n")
+        print("✅ fastText language detector downloaded\\n")
     except Exception as e:
         print(f"⚠️  Failed to download language detector: {str(e)[:100]}")
-        print("   Auto-detect will fall back to English until models/lid.176.ftz is available.\n")
+        print("   Auto-detect will fall back to English until models/lid.176.ftz is available.\\n")
 
 print("="*80)
 print("Model download complete!")
