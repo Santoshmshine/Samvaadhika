@@ -192,8 +192,9 @@ def detect_language(text: str) -> str:
     if detector == "stub" or not text.strip():
         return "en"
     try:
-        predictions = detector.predict(text.replace("\n", " "), k=1)
-        label = predictions[0][0].replace("__label__", "")
+        # Avoid fasttext's NumPy-2-incompatible Python predict wrapper.
+        predictions = detector.f.predict(text.replace("\n", " "), 1, 0.0, "strict")
+        label = predictions[0][1].replace("__label__", "")
         # fastText uses 'hi' and 'mr' directly
         if label in SUPPORTED_LANGUAGES:
             return label
@@ -213,6 +214,7 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
     Returns (translated_text, confidence_score 0-1).
     """
     if source_lang == target_lang:
+        logger.info(f"Same-language request detected: {source_lang} -> {target_lang}; returning original text.")
         return text, 1.0
 
     # Try IndicTrans2 first
@@ -233,23 +235,46 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
 
 def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     """
-    IndicTrans2 distilled model via the ai4bharat/IndicTrans2 inference API.
-    Requires: pip install transformers sentencepiece sacremoses torch
-    and the model checkpoint downloaded to models/indictrans2*/
+    IndicTrans2 distilled model with direction-based routing.
+
+    Supported models:
+    - indictrans2-en-indic-dist-200M: English → Hindi, Marathi (available)
+    - indictrans2-indic-en-dist-200M: Hindi, Marathi → English (gated, need access request)
+    - indictrans2-indic-indic-dist-320M: Hindi ↔ Marathi (gated, need access request)
+
+    Returns (translated_text, confidence_score).
+    Confidence reflects model quality and direction support.
     """
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     import torch
 
-    model_dir = _find_model_dir(
-        "indictrans2",
-        "indictrans2-en-indic-dist-200M",
-        "indictrans2-indic-en-dist-200M",
-        "indictrans2-en-indic-1B",
-    )
+    # Direction-to-model mapping
+    direction_map = {
+        ('en', 'hi'): ('indictrans2-en-indic-dist-200M', 0.88),
+        ('en', 'mr'): ('indictrans2-en-indic-dist-200M', 0.88),
+        ('hi', 'en'): ('indictrans2-indic-en-dist-200M', 0.85),
+        ('mr', 'en'): ('indictrans2-indic-en-dist-200M', 0.85),
+        ('hi', 'mr'): ('indictrans2-indic-indic-dist-320M', 0.82),
+        ('mr', 'hi'): ('indictrans2-indic-indic-dist-320M', 0.82),
+    }
+
+    # Check if direction is supported
+    direction = (src, tgt)
+    if direction not in direction_map:
+        raise ValueError(
+            f"IndicTrans2 does not support {src}→{tgt} translation. "
+            f"Supported directions: en↔hi, en↔mr, hi↔mr"
+        )
+
+    model_name, confidence = direction_map[direction]
+
+    # Find the model directory
+    model_dir = _find_model_dir(model_name, "indictrans2")
     if model_dir is None:
         raise FileNotFoundError(
-            "IndicTrans2 model not found. Expected at models/indictrans2/ "
-            "or models/indictrans2-en-indic-dist-200M/"
+            f"IndicTrans2 model '{model_name}' not found at models/{model_name}/. "
+            f"For {src}→{tgt}, the gated repository access may be required. "
+            f"Visit: https://huggingface.co/ai4bharat/{model_name} to request access."
         )
 
     # Language code mapping for IndicTrans2
@@ -264,6 +289,7 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     # IndicTrans2 custom tokenizer expects: "src_lang tgt_lang actual_text"
     tagged_text = f"{src_code} {tgt_code} {text}"
     inputs = tokenizer(tagged_text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+
     with torch.no_grad():
         outputs = model.generate(**inputs, max_length=512, num_beams=1, use_cache=False)
 
@@ -271,7 +297,8 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     tokenizer._switch_to_target_mode()
     translated = tokenizer.decode(outputs[0], skip_special_tokens=True)
     tokenizer._switch_to_input_mode()
-    return translated, 0.85
+
+    return translated, confidence
 
 
 def _translate_argos(text: str, src: str, tgt: str) -> Tuple[str, float]:
