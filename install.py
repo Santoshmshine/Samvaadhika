@@ -212,7 +212,11 @@ for hf_id, local_dir in models:
 
     try:
         os.makedirs(local_dir, exist_ok=True)
-        snapshot_download(hf_id, local_dir=local_dir)
+        snapshot_download(
+            hf_id,
+            local_dir=local_dir,
+            ignore_patterns=["pytorch_model.bin"],
+        )
 
         # Verify
         files = os.listdir(local_dir)
