@@ -334,6 +334,7 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
         return [{"start": 0.0, "end": 5.0, "text": "[ASR not available — install faster-whisper]"}], "en"
 
     try:
+        # First attempt with VAD enabled (faster, skips silence)
         segments_iter, info = model.transcribe(
             str(audio_path),
             language=language,
@@ -344,6 +345,42 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
             {"start": s.start, "end": s.end, "text": s.text.strip()}
             for s in segments_iter
         ]
+
+        # If VAD produced very little speech for a long input, retry without VAD
+        try:
+            import wave
+            duration = None
+            if audio_path.suffix.lower() == ".wav":
+                try:
+                    with wave.open(str(audio_path), 'rb') as wf:
+                        duration = wf.getnframes() / float(wf.getframerate())
+                except Exception:
+                    duration = None
+
+            total_speech = sum((s["end"] - s["start"]) for s in segments) if segments else 0.0
+            if duration and total_speech < max(1.0, duration * 0.15):
+                logger.info(f"ASR VAD produced only {total_speech:.1f}s speech from {duration:.1f}s audio; retrying without VAD.")
+                segments_iter, info = model.transcribe(
+                    str(audio_path),
+                    language=language,
+                    beam_size=5,
+                    vad_filter=False,
+                )
+                segments = [
+                    {"start": s.start, "end": s.end, "text": s.text.strip()}
+                    for s in segments_iter
+                ]
+        except Exception:
+            # best-effort duration check; continue with whatever segments we have
+            pass
+        # Debug: log brief summary of segments
+        try:
+            if segments:
+                logger.info(f"ASR: {len(segments)} segments. First segment: '{segments[0]['text'][:200]}'")
+            else:
+                logger.info("ASR: no segments produced.")
+        except Exception:
+            pass
         return segments, info.language
     except Exception as e:
         logger.error(f"ASR transcription failed: {e}")
@@ -364,6 +401,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
         return _tts_parler(text, language, output_path)
     except Exception as e:
         logger.warning(f"Parler-TTS unavailable ({e}), trying pyttsx3 stub.")
+        logger.debug("Parler-TTS exception details:", exc_info=True)
 
     try:
         return _tts_pyttsx3(text, language, output_path)
@@ -378,6 +416,21 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     from parler_tts import ParlerTTSForConditionalGeneration
     from transformers import AutoTokenizer
     import soundfile as sf
+
+    # Workaround: disable TorchScript compilation (monkeypatch torch.jit.script/trace)
+    # Some frozen/onedir builds prevent TorchScript from reading original .py sources
+    # and cause errors like: "Can't get source for <function ...>. TorchScript requires source access".
+    # Temporarily replace torch.jit.script and torch.jit.trace with no-ops so parler_tts
+    # doesn't attempt to compile to TorchScript at load/generation time.
+    _orig_jit_script = getattr(torch.jit, "script", None)
+    _orig_jit_trace = getattr(torch.jit, "trace", None)
+    def _noop_jit(x, *a, **k):
+        return x
+    try:
+        if _orig_jit_script is not None:
+            torch.jit.script = _noop_jit
+        if _orig_jit_trace is not None:
+            torch.jit.trace = _noop_jit
 
     model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
     if model_dir is None:
@@ -396,9 +449,19 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     with torch.no_grad():
         generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
 
-    audio = generation.cpu().numpy().squeeze()
-    sf.write(str(output_path), audio, model.config.sampling_rate)
-    return True
+    try:
+        audio = generation.cpu().numpy().squeeze()
+        sf.write(str(output_path), audio, model.config.sampling_rate)
+        return True
+    finally:
+        # Restore original torch.jit functions
+        try:
+            if _orig_jit_script is not None:
+                torch.jit.script = _orig_jit_script
+            if _orig_jit_trace is not None:
+                torch.jit.trace = _orig_jit_trace
+        except Exception:
+            pass
 
 
 def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
@@ -410,9 +473,10 @@ def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     # Verify output file was written and has non-trivial size
     try:
         if output_path.exists() and output_path.stat().st_size > 1024:
+            logger.info(f"pyttsx3 produced audio file: {output_path} ({output_path.stat().st_size} bytes)")
             return True
         else:
-            logger.warning(f"pyttsx3 produced empty or tiny audio file: {output_path}")
+            logger.warning(f"pyttsx3 produced empty or tiny audio file: {output_path} ({output_path.stat().st_size if output_path.exists() else 0} bytes)")
             return False
     except Exception as e:
         logger.warning(f"pyttsx3 verification failed: {e}")
