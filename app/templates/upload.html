@@ -84,14 +84,71 @@ dropZone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
 
+// enable/disable upload button depending on file + language selections
+const srcSelectEl = document.getElementById('sourceLang');
+const tgtSelectEl = document.getElementById('targetLang');
+function updateUploadBtn() {
+  const btn = document.getElementById('uploadBtn');
+  if (!selectedFile) { btn.disabled = true; return; }
+  const ext = selectedFile.name.split('.').pop().toLowerCase();
+  const audioVideoExts = ['mp3','wav','ogg','m4a','flac','aac','mp4','avi','mov','mkv','webm'];
+  const src = srcSelectEl.value;
+  const tgt = tgtSelectEl.value;
+  if (!tgt) { btn.disabled = true; return; }
+  if (audioVideoExts.includes(ext)) {
+    // require explicit source for audio/video
+    btn.disabled = !src || src === 'auto';
+  } else {
+    btn.disabled = false;
+  }
+}
+srcSelectEl.addEventListener('change', updateUploadBtn);
+tgtSelectEl.addEventListener('change', updateUploadBtn);
+
 function handleFile(file) {
   selectedFile = file;
-  const ext = file.name.split('.').pop().toUpperCase().slice(0,4);
+  const extRaw = file.name.split('.').pop().toLowerCase();
+  const ext = extRaw.toUpperCase().slice(0,4);
   document.getElementById('fileExt').textContent = ext;
   document.getElementById('fileName').textContent = file.name;
   document.getElementById('fileSize').textContent = formatBytes(file.size);
   document.getElementById('fileRow').classList.remove('hidden');
-  document.getElementById('uploadBtn').disabled = false;
+  // update button state based on current selections
+  updateUploadBtn();
+
+  // For audio/video files, require the user to pick a source language (disable auto-detect)
+  const audioExts = ['mp3','wav','ogg','m4a','flac','aac'];
+  const videoExts = ['mp4','avi','mov','mkv','webm'];
+  const srcSelect = document.getElementById('sourceLang');
+  if (audioExts.includes(extRaw) || videoExts.includes(extRaw)) {
+    // remove the Auto-detect option if present
+    for (let i = 0; i < srcSelect.options.length; i++) {
+      if (srcSelect.options[i].value === 'auto') {
+        srcSelect.remove(i);
+        break;
+      }
+    }
+    // Insert placeholder prompting user to choose
+    if (!document.getElementById('srcPlaceholder')) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.id = 'srcPlaceholder';
+      opt.text = '-- Select source language --';
+      opt.selected = true;
+      opt.disabled = true;
+      srcSelect.insertBefore(opt, srcSelect.firstChild);
+    }
+  } else {
+    // Restore Auto-detect option if it was removed
+    if (!Array.from(srcSelect.options).some(o => o.value === 'auto')) {
+      const autoOpt = document.createElement('option');
+      autoOpt.value = 'auto';
+      autoOpt.text = 'Auto-detect';
+      srcSelect.insertBefore(autoOpt, srcSelect.firstChild);
+    }
+    const ph = document.getElementById('srcPlaceholder');
+    if (ph) ph.remove();
+  }
 }
 
 function formatBytes(b) {
@@ -104,6 +161,13 @@ async function submitUpload() {
   if (!selectedFile) return;
   const src = document.getElementById('sourceLang').value;
   const tgt = document.getElementById('targetLang').value;
+  // If file is audio/video, require explicit source language
+  const ext = selectedFile.name.split('.').pop().toLowerCase();
+  const audioVideoExts = ['mp3','wav','ogg','m4a','flac','aac','mp4','avi','mov','mkv','webm'];
+  if (audioVideoExts.includes(ext) && (!src || src === 'auto')) {
+    alert('Please select the source language for audio/video uploads (auto-detect is disabled for large files).');
+    return;
+  }
   const btn = document.getElementById('uploadBtn');
   const status = document.getElementById('statusMsg');
   btn.disabled = true;

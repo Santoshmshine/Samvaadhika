@@ -159,6 +159,14 @@ def _process_audio_job(job: Job, db):
     # Step 2: ASR
     segments, detected_lang = transcribe_audio(wav_path, job.source_language)
     job.source_language = job.source_language or detected_lang
+    # Debug: log ASR segments summary
+    try:
+        if segments:
+            logger.info(f"Job {job.id[:8]} ASR produced {len(segments)} segments. First: '{segments[0]['text'][:200]}'")
+        else:
+            logger.info(f"Job {job.id[:8]} ASR produced no segments.")
+    except Exception:
+        pass
     job.progress = 50
     db.commit()
 
@@ -175,6 +183,8 @@ def _process_audio_job(job: Job, db):
     input_base = Path(job.input_path).stem
     tts_path = job_out_dir / f"translated_{input_base}.wav"
     full_translated = " ".join(s["text"] for s in translated_segments)
+    logger.info(f"Job {job.id[:8]} full translated text length: {len(full_translated)} chars")
+    logger.debug(f"Job {job.id[:8]} full translated text preview: '{full_translated[:400]}'")
     synthesize_speech(full_translated, job.target_language, tts_path)
     job.audio_output_path = str(tts_path)
     job.output_text = full_translated

@@ -49,8 +49,13 @@
         <!-- Language row -->
         <div class="lang-row">
           <div class="lang-field">
-            <label>DETECTED LANGUAGE</label>
-            <div class="lang-value" id="detectedLang">—</div>
+            <label for="sourceLang">SOURCE LANGUAGE</label>
+            <select class="lang-select" id="sourceLang">
+              <option value="auto">Auto-detect</option>
+              {% for code, name in languages.items() %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
           </div>
           <div class="lang-field">
             <label for="targetLang">TRANSLATE TO</label>
@@ -218,6 +223,26 @@ dropZone.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
 
+// enable/disable translate button depending on file + language selections
+const srcSelectEl = document.getElementById('sourceLang');
+const tgtSelectEl = document.getElementById('targetLang');
+function updateTranslateBtn() {
+  const btn = document.getElementById('translateBtn');
+  if (!selectedFile) { btn.disabled = true; return; }
+  const ext = selectedFile.name.split('.').pop().toLowerCase();
+  const audioVideoExts = ['mp3','wav','ogg','m4a','flac','aac','mp4','avi','mov','mkv','webm'];
+  const src = srcSelectEl.value;
+  const tgt = tgtSelectEl.value;
+  if (!tgt) { btn.disabled = true; return; }
+  if (audioVideoExts.includes(ext)) {
+    btn.disabled = !src || src === 'auto';
+  } else {
+    btn.disabled = false;
+  }
+}
+srcSelectEl.addEventListener('change', updateTranslateBtn);
+tgtSelectEl.addEventListener('change', updateTranslateBtn);
+
 function handleFile(file) {
   selectedFile = file;
   const ext = file.name.split('.').pop().toUpperCase().slice(0,4);
@@ -226,13 +251,49 @@ function handleFile(file) {
   document.getElementById('fileSize').textContent = formatBytes(file.size);
   document.getElementById('fileRow').classList.remove('hidden');
   document.getElementById('detectedLang').textContent = 'Detecting…';
-  document.getElementById('translateBtn').disabled = false;
+  // ensure translate button reflects current selections
+  updateTranslateBtn();
 
   // Update wizard step
   setStep(2);
 
   // Auto-detect language hint from filename (server will do real detection)
   document.getElementById('detectedLang').textContent = 'Auto-detect';
+
+  // For audio/video files, require the user to pick a source language (disable auto-detect)
+  const extRaw = file.name.split('.').pop().toLowerCase();
+  const audioExts = ['mp3','wav','ogg','m4a','flac','aac'];
+  const videoExts = ['mp4','avi','mov','mkv','webm'];
+  const srcSelect = document.getElementById('sourceLang');
+  if (audioExts.includes(extRaw) || videoExts.includes(extRaw)) {
+    // remove the Auto-detect option if present
+    for (let i = 0; i < srcSelect.options.length; i++) {
+      if (srcSelect.options[i].value === 'auto') {
+        srcSelect.remove(i);
+        break;
+      }
+    }
+    // Insert placeholder prompting user to choose
+    if (!document.getElementById('srcPlaceholder')) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.id = 'srcPlaceholder';
+      opt.text = '-- Select source language --';
+      opt.selected = true;
+      opt.disabled = true;
+      srcSelect.insertBefore(opt, srcSelect.firstChild);
+    }
+  } else {
+    // Restore Auto-detect option if it was removed
+    if (!Array.from(srcSelect.options).some(o => o.value === 'auto')) {
+      const autoOpt = document.createElement('option');
+      autoOpt.value = 'auto';
+      autoOpt.text = 'Auto-detect';
+      srcSelect.insertBefore(autoOpt, srcSelect.firstChild);
+    }
+    const ph = document.getElementById('srcPlaceholder');
+    if (ph) ph.remove();
+  }
 }
 
 function formatBytes(b) {
@@ -245,6 +306,7 @@ function formatBytes(b) {
 async function submitJob() {
   if (!selectedFile) return;
   const target = document.getElementById('targetLang').value;
+  const src = document.getElementById('sourceLang').value;
   const btn = document.getElementById('translateBtn');
   btn.disabled = true;
   btn.textContent = 'Uploading…';
@@ -252,7 +314,17 @@ async function submitJob() {
 
   const fd = new FormData();
   fd.append('file', selectedFile);
-  fd.append('source_language', 'auto');
+  // If audio/video, require explicit source selection
+  const ext = selectedFile.name.split('.').pop().toLowerCase();
+  const audioVideoExts = ['mp3','wav','ogg','m4a','flac','aac','mp4','avi','mov','mkv','webm'];
+  if (audioVideoExts.includes(ext) && (!src || src === 'auto')) {
+    btn.disabled = false;
+    btn.textContent = 'Translate';
+    hideToast();
+    alert('Please select the source language for audio/video uploads (auto-detect is disabled for large files).');
+    return;
+  }
+  fd.append('source_language', src);
   fd.append('target_language', target);
 
   try {

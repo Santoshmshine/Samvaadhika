@@ -214,18 +214,22 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
     Returns (translated_text, confidence_score 0-1).
     """
     if source_lang == target_lang:
-        logger.info(f"Same-language request detected: {source_lang} -> {target_lang}; returning original text.")
+        logger.info(f"translate_text: source==target ({source_lang}); skipping MT")
         return text, 1.0
 
     # Try IndicTrans2 first
     try:
-        return _translate_indictrans2(text, source_lang, target_lang)
+        res = _translate_indictrans2(text, source_lang, target_lang)
+        logger.info("translate_text: used IndicTrans2")
+        return res
     except Exception as e:
         logger.warning(f"IndicTrans2 unavailable ({e}), trying argostranslate fallback.")
 
     # Argostranslate fallback
     try:
-        return _translate_argos(text, source_lang, target_lang)
+        res = _translate_argos(text, source_lang, target_lang)
+        logger.info("translate_text: used ArgosTranslate fallback")
+        return res
     except Exception as e:
         logger.warning(f"argostranslate unavailable ({e}). Returning stub translation.")
 
@@ -356,6 +360,7 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
         return [{"start": 0.0, "end": 5.0, "text": "[ASR not available — install faster-whisper]"}], "en"
 
     try:
+        # First attempt with VAD enabled (faster, skips silence)
         segments_iter, info = model.transcribe(
             str(audio_path),
             language=language,
@@ -366,6 +371,42 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
             {"start": s.start, "end": s.end, "text": s.text.strip()}
             for s in segments_iter
         ]
+
+        # If VAD produced very little speech for a long input, retry without VAD
+        try:
+            import wave
+            duration = None
+            if audio_path.suffix.lower() == ".wav":
+                try:
+                    with wave.open(str(audio_path), 'rb') as wf:
+                        duration = wf.getnframes() / float(wf.getframerate())
+                except Exception:
+                    duration = None
+
+            total_speech = sum((s["end"] - s["start"]) for s in segments) if segments else 0.0
+            if duration and total_speech < max(1.0, duration * 0.15):
+                logger.info(f"ASR VAD produced only {total_speech:.1f}s speech from {duration:.1f}s audio; retrying without VAD.")
+                segments_iter, info = model.transcribe(
+                    str(audio_path),
+                    language=language,
+                    beam_size=5,
+                    vad_filter=False,
+                )
+                segments = [
+                    {"start": s.start, "end": s.end, "text": s.text.strip()}
+                    for s in segments_iter
+                ]
+        except Exception:
+            # best-effort duration check; continue with whatever segments we have
+            pass
+        # Debug: log brief summary of segments
+        try:
+            if segments:
+                logger.info(f"ASR: {len(segments)} segments. First segment: '{segments[0]['text'][:200]}'")
+            else:
+                logger.info("ASR: no segments produced.")
+        except Exception:
+            pass
         return segments, info.language
     except Exception as e:
         logger.error(f"ASR transcription failed: {e}")
@@ -386,6 +427,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
         return _tts_parler(text, language, output_path)
     except Exception as e:
         logger.warning(f"Parler-TTS unavailable ({e}), trying pyttsx3 stub.")
+        logger.debug("Parler-TTS exception details:", exc_info=True)
 
     try:
         return _tts_pyttsx3(text, language, output_path)
@@ -395,32 +437,104 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
+    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed.
+
+    This function applies a temporary monkeypatch to `torch.jit.script` and
+    `torch.jit.trace` to avoid TorchScript attempting to read source files
+    from the frozen onedir. It then imports `parler_tts`, loads the model,
+    generates audio, writes debug artifacts, and restores the original JIT
+    functions in a finally block.
+    """
     import torch
-    from parler_tts import ParlerTTSForConditionalGeneration
-    from transformers import AutoTokenizer
-    import soundfile as sf
+    # Prepare monkeypatch
+    _orig_jit_script = getattr(torch.jit, "script", None)
+    _orig_jit_trace = getattr(torch.jit, "trace", None)
+    def _noop_jit(x, *a, **k):
+        return x
+    try:
+        if _orig_jit_script is not None:
+            torch.jit.script = _noop_jit
+        if _orig_jit_trace is not None:
+            torch.jit.trace = _noop_jit
+    except Exception:
+        pass
 
-    model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
-    if model_dir is None:
-        raise FileNotFoundError(
-            "Parler-TTS model not found. Expected at models/indic-parler-tts/"
-        )
+    try:
+        # Import third-party modules while JIT is disabled
+        from parler_tts import ParlerTTSForConditionalGeneration
+        from transformers import AutoTokenizer
+        import soundfile as sf
 
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-    model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
-    model.eval()
+        model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
+        if model_dir is None:
+            raise FileNotFoundError(
+                "Parler-TTS model not found. Expected at models/indic-parler-tts/"
+            )
 
-    description = "A female speaker delivers a clear, natural voice."
-    input_ids = tokenizer(description, return_tensors="pt").input_ids
-    prompt_ids = tokenizer(text, return_tensors="pt").input_ids
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
+        model.eval()
 
-    with torch.no_grad():
-        generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
+        description = "A female speaker delivers a clear, natural voice."
+        input_ids = tokenizer(description, return_tensors="pt").input_ids
+        prompt_ids = tokenizer(text, return_tensors="pt").input_ids
 
-    audio = generation.cpu().numpy().squeeze()
-    sf.write(str(output_path), audio, model.config.sampling_rate)
-    return True
+        with torch.no_grad():
+            generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
+            # Debug logging and artifact dump (sequential, isolated try/except blocks)
+            sr = getattr(model.config, "sampling_rate", None)
+            logger.info(f"Parler-TTS model sampling_rate: {sr}")
+
+            audio = None
+            try:
+                gen_np = generation.cpu().numpy()
+                logger.info(f"Parler-TTS generation raw shape: {getattr(gen_np, 'shape', 'unknown')}")
+                try:
+                    audio = gen_np.squeeze()
+                    if sr:
+                        duration = audio.shape[-1] / float(sr)
+                        logger.info(f"Parler-TTS generated audio duration: {duration:.2f}s")
+                except Exception as _e:
+                    logger.debug(f"Failed to process generation ndarray: {_e}")
+            except Exception as _e:
+                logger.debug(f"Failed to inspect generation ndarray: {_e}")
+
+            try:
+                debug_dir = BASE_DIR / "debug_parler"
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                if audio is not None:
+                    try:
+                        import numpy as _np
+                        fname = debug_dir / f"parler_{sha256_text(text)[:8]}.npy"
+                        _np.save(str(fname), audio)
+                    except Exception as _e:
+                        logger.debug(f"Failed to save parler npy debug: {_e}")
+                    try:
+                        if sr:
+                            sf.write(str(debug_dir / f"parler_{sha256_text(text)[:8]}.wav"), audio, sr)
+                    except Exception as _e:
+                        logger.debug(f"Failed to write parler debug wav: {_e}")
+            except Exception as _e:
+                logger.debug(f"Parler-TTS debug artifact save failed: {_e}")
+
+            # Write final output file used by the application
+            try:
+                if audio is None:
+                    audio = generation.cpu().numpy().squeeze()
+                sf.write(str(output_path), audio, getattr(model.config, "sampling_rate", 44100))
+                return True
+            except Exception as _e:
+                logger.error(f"Failed to write Parler-TTS output file: {_e}")
+                raise
+    finally:
+        # Restore original torch.jit functions
+        try:
+            if _orig_jit_script is not None:
+                torch.jit.script = _orig_jit_script
+            if _orig_jit_trace is not None:
+                torch.jit.trace = _orig_jit_trace
+        except Exception:
+            pass
 
 
 def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
@@ -429,7 +543,17 @@ def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     engine = pyttsx3.init()
     engine.save_to_file(text, str(output_path))
     engine.runAndWait()
-    return True
+    # Verify output file was written and has non-trivial size
+    try:
+        if output_path.exists() and output_path.stat().st_size > 1024:
+            logger.info(f"pyttsx3 produced audio file: {output_path} ({output_path.stat().st_size} bytes)")
+            return True
+        else:
+            logger.warning(f"pyttsx3 produced empty or tiny audio file: {output_path} ({output_path.stat().st_size if output_path.exists() else 0} bytes)")
+            return False
+    except Exception as e:
+        logger.warning(f"pyttsx3 verification failed: {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------
