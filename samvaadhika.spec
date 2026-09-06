@@ -198,6 +198,8 @@ hiddenimports += ["parler_tts"]
 datas += collect_data_files("faster_whisper")
 # Ensure audiotools templates/assets required by Parler-TTS are bundled
 datas += collect_data_files("audiotools")
+# Include indic_transliteration package data (sanscript schemes JSON files)
+datas += collect_data_files("indic_transliteration")
 
 # If PyInstaller misses specific ONNX or model files, explicitly include them.
 # Look for ONNX assets under the installed faster_whisper package and for

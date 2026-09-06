@@ -174,6 +174,77 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def transliterate_text_if_needed(text: str, lang: str) -> str:
+    """If `lang` is Hindi/Marathi and text appears to be Latin-script,
+    attempt to transliterate it to Devanagari for TTS.
+    Falls back to returning the original text if the transliteration
+    library isn't installed or the heuristic doesn't trigger.
+    """
+    if lang not in ("hi", "mr") or not text:
+        return text
+
+    # Heuristic: count Devanagari vs ASCII letters
+    deva_count = sum(1 for ch in text if "\u0900" <= ch <= "\u097F")
+    ascii_letters = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+    total_letters = max(1, deva_count + ascii_letters)
+
+    # If already contains a substantial Devanagari portion, skip
+    if deva_count / total_letters > 0.3:
+        return text
+
+    # If not primarily ASCII transliteration, skip
+    if ascii_letters / total_letters < 0.4:
+        return text
+
+    try:
+        from indic_transliteration import sanscript
+        from indic_transliteration.sanscript import transliterate
+
+        # Try a sensible default scheme; fall back to IAST if ITRANS fails
+        try:
+            dev = transliterate(text, sanscript.ITRANS, sanscript.DEVANAGARI)
+        except Exception:
+            dev = transliterate(text, sanscript.IAST, sanscript.DEVANAGARI)
+
+        logger.info("Transliterated Latin-script text to Devanagari for TTS.")
+        return dev
+    except Exception as e:
+        logger.warning(f"Transliteration unavailable or failed: {e}. Skipping transliteration.")
+        return text
+
+
+def detect_and_fix_transliterated_segment(text: str) -> (str, str):
+    """Detect if `text` is a Latin-script transliteration of Hindi/Marathi.
+    If so, attempt to transliterate to Devanagari and return (fixed_text, lang).
+    Otherwise return (original_text, detected_lang).
+    """
+    # Quick detect
+    detected = detect_language(text)
+    # If detected already Indic, nothing to do
+    if detected in ("hi", "mr"):
+        return text, detected
+
+    # Heuristic: many ASCII letters and few Devanagari → candidate for transliteration
+    deva_count = sum(1 for ch in text if "\u0900" <= ch <= "\u097F")
+    ascii_letters = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+    if ascii_letters < 3 or deva_count > 0:
+        return text, detected
+
+    # Try transliterating to Marathi and Hindi and re-run detection
+    tries = ["mr", "hi"]
+    for lang in tries:
+        try:
+            cand = transliterate_text_if_needed(text, lang)
+            new_det = detect_language(cand)
+            if new_det == lang:
+                logger.info(f"Detected transliterated {lang.upper()} segment; auto-fixed for MT/TTS.")
+                return cand, lang
+        except Exception:
+            continue
+
+    return text, detected
+
+
 def _ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 

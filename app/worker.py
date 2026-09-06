@@ -172,17 +172,67 @@ def _process_audio_job(job: Job, db):
 
     # Step 3: Translate each segment
     translated_segments = []
+    from app.pipeline import detect_and_fix_transliterated_segment
+    report_rows = []
     for seg in segments:
-        t_text, conf = translate_text(seg["text"], job.source_language, job.target_language)
+        # Attempt to detect and fix Latin-script transliteration (e.g., 'vityanigi riva')
+        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"])
+        try:
+            if fixed_text != seg["text"]:
+                logger.info(
+                    f"Job {job.id[:8]} segment fixed: '{seg['text'][:200]}' -> '{fixed_text[:200]}'"
+                )
+            else:
+                logger.debug(f"Job {job.id[:8]} segment unchanged: '{seg['text'][:200]}'")
+        except Exception:
+            pass
+
+        if fixed_lang in ("hi", "mr") and (job.source_language is None or job.source_language == "en"):
+            logger.info(f"Job {job.id[:8]} source_language updated: {job.source_language} -> {fixed_lang}")
+            job.source_language = fixed_lang
+            db.commit()
+
+        t_text, conf = translate_text(fixed_text, job.source_language, job.target_language)
         t_text = apply_glossary(t_text, job.source_language, job.target_language, db)
         translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
+        # record for per-job report
+        try:
+            report_rows.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "orig": seg["text"],
+                "fixed": fixed_text,
+                "fixed_lang": fixed_lang,
+                "translated": t_text,
+                "confidence": conf,
+            })
+        except Exception:
+            pass
     job.progress = 70
     db.commit()
+
+    # Write per-job CSV report of segment translations for debugging
+    try:
+        import csv
+        report_path = job_out_dir / "segment_translations.csv"
+        with report_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["start", "end", "orig", "fixed", "fixed_lang", "translated", "confidence"])
+            writer.writeheader()
+            for r in report_rows:
+                writer.writerow(r)
+        logger.info(f"Wrote segment translation report: {report_path}")
+    except Exception as e:
+        logger.debug(f"Failed to write segment report: {e}")
 
     # Step 4: TTS — preserve input filename for the generated audio
     input_base = Path(job.input_path).stem
     tts_path = job_out_dir / f"translated_{input_base}.wav"
     full_translated = " ".join(s["text"] for s in translated_segments)
+    try:
+        from app.pipeline import transliterate_text_if_needed
+        full_translated = transliterate_text_if_needed(full_translated, job.target_language)
+    except Exception:
+        pass
     logger.info(f"Job {job.id[:8]} full translated text length: {len(full_translated)} chars")
     logger.debug(f"Job {job.id[:8]} full translated text preview: '{full_translated[:400]}'")
     synthesize_speech(full_translated, job.target_language, tts_path)
@@ -228,14 +278,61 @@ def _process_video_job(job: Job, db):
 
     # Step 4: Translate each segment
     translated_segments = []
+    from app.pipeline import detect_and_fix_transliterated_segment
+    report_rows = []
     for seg in segments:
-        t_text, conf = translate_text(seg["text"], job.source_language, job.target_language)
+        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"])
+        try:
+            if fixed_text != seg["text"]:
+                logger.info(
+                    f"Job {job.id[:8]} segment fixed: '{seg['text'][:200]}' -> '{fixed_text[:200]}'"
+                )
+            else:
+                logger.debug(f"Job {job.id[:8]} segment unchanged: '{seg['text'][:200]}'")
+        except Exception:
+            pass
+        if fixed_lang in ("hi", "mr") and (job.source_language is None or job.source_language == "en"):
+            logger.info(f"Job {job.id[:8]} source_language updated: {job.source_language} -> {fixed_lang}")
+            job.source_language = fixed_lang
+            db.commit()
+
+        t_text, conf = translate_text(fixed_text, job.source_language, job.target_language)
         t_text = apply_glossary(t_text, job.source_language, job.target_language, db)
         translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
+        try:
+            report_rows.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "orig": seg["text"],
+                "fixed": fixed_text,
+                "fixed_lang": fixed_lang,
+                "translated": t_text,
+                "confidence": conf,
+            })
+        except Exception:
+            pass
     job.progress = 70
     db.commit()
 
+    # Write per-job CSV report of segment translations for debugging
+    try:
+        import csv
+        report_path = job_out_dir / "segment_translations.csv"
+        with report_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["start", "end", "orig", "fixed", "fixed_lang", "translated", "confidence"])
+            writer.writeheader()
+            for r in report_rows:
+                writer.writerow(r)
+        logger.info(f"Wrote segment translation report: {report_path}")
+    except Exception as e:
+        logger.debug(f"Failed to write segment report: {e}")
+
     full_translated = " ".join(s["text"] for s in translated_segments)
+    try:
+        from app.pipeline import transliterate_text_if_needed
+        full_translated = transliterate_text_if_needed(full_translated, job.target_language)
+    except Exception:
+        pass
     job.output_text = full_translated
 
     # Step 5: TTS (text-to-speech) — preserve input filename
