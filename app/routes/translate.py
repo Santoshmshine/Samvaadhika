@@ -21,7 +21,7 @@ from app.config import (
 )
 from app.database import get_db
 from app.models import AuditLog, Job, User
-from app.pipeline import detect_language, sha256_file, sha256_text, translate_text
+from app.pipeline import detect_language, sha256_file, translate_text, translation_cache_hash
 
 router = APIRouter(tags=["translate"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -59,7 +59,7 @@ async def translate_text_api(
     src = source_language if source_language != "auto" else detect_language(text)
 
     # Check cache — same text + same language pair
-    content_hash = sha256_text(f"{src}:{target_language}:{text}")
+    content_hash = translation_cache_hash(text, src, target_language)
     cached = db.query(Job).filter(
         Job.input_hash == content_hash,
         Job.status == "completed",

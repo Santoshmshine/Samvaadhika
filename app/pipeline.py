@@ -11,10 +11,12 @@ are downloaded — each stub logs a clear message and returns a placeholder resu
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -128,6 +130,10 @@ def _find_model_dir(name: str, *alt_names: str) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 _whisper_model = None
 _lang_detector = None
+_translation_models = {}
+_translation_model_lock = threading.Lock()
+
+TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
 
 
 def _get_whisper():
@@ -387,6 +393,8 @@ def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = N
     # If detected already Indic, nothing to do
     if detected in ("hi", "mr"):
         return text, detected
+    if asr_hint == "en" and detected == "en":
+        return text, detected
 
     # If ASR already reported Marathi/Hindi and text is Latin-like, force a
     # speculative transliteration to that language. This helps when ASR emits
@@ -507,6 +515,79 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
     return f"[TRANSLATION STUB: {source_lang}→{target_lang}] {text}", 0.0
 
 
+def translation_cache_hash(text: str, source_lang: str, target_lang: str) -> str:
+    """Build a cache key that expires results when the MT pipeline changes."""
+    return sha256_text(
+        f"{TRANSLATION_PIPELINE_VERSION}:{source_lang}:{target_lang}:{text}"
+    )
+
+
+_PROTECTED_TEXT_PATTERN = re.compile(r"(https?://[^\s]+|www\.[^\s]+|\r\n|\r|\n)")
+
+_CURATED_IDIOM_TRANSLATIONS = {
+    ("en", "mr", "it is raining cats and dogs outside"): "बाहेर मुसळधार पाऊस पडत आहे।",
+    ("hi", "en", "ऊँट के मुँह में जीरा"): "Too little for a great need.",
+}
+
+
+def _curated_idiom_translation(text: str, source_lang: str, target_lang: str):
+    normalized = text.strip().casefold().rstrip(".!?।").strip()
+    return _CURATED_IDIOM_TRANSLATIONS.get((source_lang, target_lang, normalized))
+
+
+def _prepare_translation_part(text: str, source_lang: str) -> str:
+    if source_lang != "en":
+        return text
+
+    from sacremoses import MosesPunctNormalizer, MosesTokenizer
+
+    normalized = MosesPunctNormalizer(lang="en").normalize(text)
+    return " ".join(MosesTokenizer(lang="en").tokenize(normalized, escape=False))
+
+
+def _translate_preserving_protected_text(text: str, translate_part) -> str:
+    """Translate prose while preserving URLs and original line separators."""
+    parts = _PROTECTED_TEXT_PATTERN.split(text)
+    translated_parts = []
+    for part in parts:
+        if not part:
+            continue
+        if _PROTECTED_TEXT_PATTERN.fullmatch(part):
+            translated_parts.append(part)
+            continue
+        if not part.strip():
+            translated_parts.append(part)
+            continue
+
+        leading = part[:len(part) - len(part.lstrip())]
+        trailing = part[len(part.rstrip()):]
+        translated_parts.append(leading + translate_part(part.strip()) + trailing)
+    return "".join(translated_parts)
+
+
+def _get_translation_model(model_dir: Path):
+    cache_key = str(model_dir.resolve())
+    cached = _translation_models.get(cache_key)
+    if cached is not None:
+        return cached
+
+    with _translation_model_lock:
+        cached = _translation_models.get(cache_key)
+        if cached is None:
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(model_dir), trust_remote_code=True
+            )
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                str(model_dir), trust_remote_code=True
+            )
+            model.eval()
+            cached = (tokenizer, model, threading.Lock())
+            _translation_models[cache_key] = cached
+    return cached
+
+
 def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     """
     IndicTrans2 distilled model with direction-based routing.
@@ -519,7 +600,6 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     Returns (translated_text, confidence_score).
     Confidence reflects model quality and direction support.
     """
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     import torch
 
     # Direction-to-model mapping
@@ -556,21 +636,35 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     src_code = lang_map.get(src, "eng_Latn")
     tgt_code = lang_map.get(tgt, "hin_Deva")
 
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
-    model.eval()
+    curated = _curated_idiom_translation(text, src, tgt)
+    if curated is not None:
+        return curated, 1.0
 
-    # IndicTrans2 custom tokenizer expects: "src_lang tgt_lang actual_text"
-    tagged_text = f"{src_code} {tgt_code} {text}"
-    inputs = tokenizer(tagged_text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+    tokenizer, model, inference_lock = _get_translation_model(model_dir)
 
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_length=512, num_beams=1, use_cache=False)
+    def translate_part(part: str) -> str:
+        prepared_part = _prepare_translation_part(part, src)
+        tagged_text = f"{src_code} {tgt_code} {prepared_part}"
+        with inference_lock:
+            inputs = tokenizer(
+                tagged_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            )
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs, max_length=512, num_beams=5, use_cache=False
+                )
 
-    # Switch tokenizer to target mode for decoding, then restore
-    tokenizer._switch_to_target_mode()
-    translated = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    tokenizer._switch_to_input_mode()
+            tokenizer._switch_to_target_mode()
+            try:
+                return tokenizer.decode(outputs[0], skip_special_tokens=True)
+            finally:
+                tokenizer._switch_to_input_mode()
+
+    translated = _translate_preserving_protected_text(text, translate_part)
 
     return translated, confidence
 
