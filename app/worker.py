@@ -340,7 +340,7 @@ def _process_video_job(job: Job, db):
                 logger.debug(f"Job {job.id[:8]} segment unchanged: '{seg['text'][:200]}'")
         except Exception:
             pass
-        if fixed_lang in ("hi", "mr") and (job.source_language is None or job.source_language == "en"):
+        if fixed_lang in ("hi", "mr") and job.source_language is None:
             logger.info(f"Job {job.id[:8]} source_language updated: {job.source_language} -> {fixed_lang}")
             job.source_language = fixed_lang
             db.commit()
@@ -378,7 +378,7 @@ def _process_video_job(job: Job, db):
     try:
         import csv
         report_path = job_out_dir / "segment_translations.csv"
-        with report_path.open("w", encoding="utf-8", newline="") as fh:
+        with report_path.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.DictWriter(
                 fh,
                 fieldnames=[
