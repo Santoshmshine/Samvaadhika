@@ -24,15 +24,20 @@ if errorlevel 1 (
 )
 python --version
 
-REM -- Activate venv if present --
-if exist "venv\Scripts\activate.bat" (
-    call venv\Scripts\activate.bat
+REM -- Activate venv312 if present --
+if exist "venv312\Scripts\activate.bat" (
+    call venv312\Scripts\activate.bat
     echo [OK] Virtual environment activated.
 ) else (
-    echo [INFO] No venv found — using system Python.
-    echo [INFO] Creating a fresh venv for the build...
-    python -m venv venv
-    call venv\Scripts\activate.bat
+    echo [INFO] No venv312 found — using system Python.
+    echo [INFO] Creating a fresh venv312 for the build...
+    python -m venv venv312
+    if errorlevel 1 (
+        echo [ERROR] Could not create venv312.
+        pause
+        exit /b 1
+    )
+    call venv312\Scripts\activate.bat
 )
 
 REM -- Upgrade pip + build tools FIRST (prevents source-build failures) --

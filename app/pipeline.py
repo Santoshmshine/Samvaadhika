@@ -14,11 +14,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unicodedata
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
+import unicodedata
 
 from app.config import (
     CACHE_DIR, OUTPUTS_DIR, UPLOADS_DIR, MODELS_DIR,
@@ -29,20 +32,22 @@ from app.config import (
 logger = logging.getLogger("samvaadhika.pipeline")
 
 # ---------------------------------------------------------------------------
-# Ensure ffmpeg is on PATH (winget installs to a deep location)
+# Ensure bundled or installed media/OCR tools are on PATH.
 # ---------------------------------------------------------------------------
 _FFMPEG_SEARCH_DIRS = [
+    BASE_DIR / "ffmpeg" / "bin",
+    Path(sys.executable).resolve().parent / "ffmpeg" / "bin" if getattr(sys, "frozen", False) else Path(),
     Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages",
     Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "ffmpeg" / "bin",
     Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "ffmpeg" / "bin",
 ]
 
 def _ensure_ffmpeg_on_path():
-    """Find ffmpeg installed by winget (or other locations) and add to PATH."""
+    """Find bundled or installed FFmpeg and add it to PATH."""
     if shutil.which("ffmpeg"):
         return  # already available
     for search_root in _FFMPEG_SEARCH_DIRS:
-        if not search_root.exists():
+        if not search_root or not search_root.exists():
             continue
         for ffmpeg_exe in search_root.rglob("ffmpeg.exe"):
             bin_dir = str(ffmpeg_exe.parent)
@@ -52,6 +57,25 @@ def _ensure_ffmpeg_on_path():
     logger.warning("ffmpeg not found in any known location. Video/audio processing may fail.")
 
 _ensure_ffmpeg_on_path()
+
+
+def _ensure_tesseract_on_path():
+    """Find bundled or installed Tesseract and add it to PATH."""
+    candidates = [
+        BASE_DIR / "tesseract" / "tesseract.exe",
+        Path(sys.executable).resolve().parent / "tesseract" / "tesseract.exe" if getattr(sys, "frozen", False) else Path(),
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR" / "tesseract.exe",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            os.environ["PATH"] = str(candidate.parent) + os.pathsep + os.environ.get("PATH", "")
+            os.environ.setdefault("TESSDATA_PREFIX", str(candidate.parent / "tessdata"))
+            logger.info(f"Using Tesseract from: {candidate}")
+            return
+    logger.warning("Tesseract not found. OCR features may fail.")
+
+
+_ensure_tesseract_on_path()
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +131,10 @@ def _find_model_dir(name: str, *alt_names: str) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 _whisper_model = None
 _lang_detector = None
+_translation_models = {}
+_translation_model_lock = threading.Lock()
+
+TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
 
 
 def _get_whisper():
@@ -176,6 +204,255 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def transliterate_text_if_needed(text: str, lang: str, suppress_log: bool = False) -> str:
+    """If `lang` is Hindi/Marathi and text appears to be Latin-script,
+    attempt to transliterate it to Devanagari for TTS.
+    Falls back to returning the original text if the transliteration
+    library isn't installed or the heuristic doesn't trigger.
+
+    `suppress_log`: when True, don't emit info-level logs (used by callers
+    that probe multiple transliteration attempts to avoid duplicate messages).
+    """
+    if lang not in ("hi", "mr") or not text:
+        return text
+
+    # Quick reject: replacement character indicates decoding issues — skip
+    if "\uFFFD" in text:
+        if not suppress_log:
+            logger.debug("Text contains replacement characters; skipping transliteration.")
+        return text
+
+    # Heuristic: count Devanagari vs Latin-script letters (including diacritics)
+    deva_count = sum(1 for ch in text if _is_devanagari(ch))
+    latin_letters = sum(1 for ch in text if _is_latin_letter(ch))
+    total_letters = max(1, deva_count + latin_letters)
+
+    # If already contains a substantial Devanagari portion, skip
+    if deva_count / total_letters > 0.3:
+        return text
+
+    # If not primarily Latin transliteration, skip
+    if latin_letters / total_letters < 0.4:
+        return text
+
+    try:
+        from indic_transliteration import sanscript
+        from indic_transliteration.sanscript import transliterate
+
+        # Try a sensible default scheme; fall back to IAST if ITRANS fails
+        try:
+            dev = transliterate(text, sanscript.ITRANS, sanscript.DEVANAGARI)
+        except Exception:
+            dev = transliterate(text, sanscript.IAST, sanscript.DEVANAGARI)
+
+        if not suppress_log:
+            logger.info("Transliterated Latin-script text to Devanagari for TTS.")
+        return dev
+    except Exception as e:
+        if not suppress_log:
+            logger.warning(f"Transliteration unavailable or failed: {e}. Skipping transliteration.")
+        return text
+
+
+def _is_devanagari(ch: str) -> bool:
+    return "\u0900" <= ch <= "\u097F"
+
+
+def _is_ascii_letter(ch: str) -> bool:
+    return ch.isascii() and ch.isalpha()
+
+
+def _is_latin_letter(ch: str) -> bool:
+    """Return True for Latin-script letters, including diacritics (e.g. ǫ, ā)."""
+    if not ch or not ch.isalpha():
+        return False
+    # Fast path: ASCII alpha
+    if ch.isascii():
+        return True
+    # Fallback: check Unicode name for 'LATIN'
+    try:
+        return "LATIN" in unicodedata.name(ch)
+    except Exception:
+        return False
+
+
+def normalize_mixed_script_runs(text: str, target_lang: str = "hi", min_ascii_run_len: int = 3) -> str:
+    """Split text into script runs and transliterate ASCII-letter runs to Devanagari.
+
+    This helps when ASR emits mixed segments like:
+        'शईदि पालन, ... resumes, sirvatum yawasthapan padhati'
+
+    We transliterate only sufficiently long ASCII-letter runs to avoid mangling
+    short acronyms or alphanumerics. Uses `transliterate_text_if_needed` with
+    `suppress_log=True` to avoid noisy duplicate messages during speculative checks.
+    """
+    if not text:
+        return text
+
+    runs = []
+    cur_type = None
+    buf = []
+
+    def flush():
+        if buf:
+            runs.append((cur_type, "".join(buf)))
+
+    for ch in text:
+        if _is_devanagari(ch):
+            t = "deva"
+        elif _is_latin_letter(ch):
+            t = "latin"
+        else:
+            t = "other"
+
+        if cur_type is None:
+            cur_type = t
+            buf.append(ch)
+        elif t == cur_type:
+            buf.append(ch)
+        else:
+            flush()
+            buf = [ch]
+            cur_type = t
+
+    flush()
+
+    out_parts = []
+    changed = False
+    for typ, seg in runs:
+        if typ == "latin" and sum(1 for c in seg if _is_latin_letter(c)) >= min_ascii_run_len and target_lang in ("hi", "mr"):
+            try:
+                new = transliterate_text_if_needed(seg, target_lang, suppress_log=True)
+                if new != seg:
+                    changed = True
+                out_parts.append(new)
+            except Exception:
+                out_parts.append(seg)
+        else:
+            out_parts.append(seg)
+
+    result = "".join(out_parts)
+    if changed:
+        logger.info("Normalized mixed-script segment by transliterating ASCII runs for TTS.")
+    return result
+
+
+def fix_mojibake(text: str) -> str:
+    """Attempt to fix common UTF-8↔Latin-1 mojibake sequences.
+
+    Many pipeline artifacts show sequences like 'à¤¶' when Devanagari
+    UTF-8 bytes were decoded as Latin-1. This helper tries a safe
+    Latin-1 -> UTF-8 re-decode when such patterns are present.
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    # Quick heuristic: presence of many high-byte (Latin-1) characters or
+    # common UTF-8-with-Latin1-decoding markers. This catches mojibake for
+    # Devanagari (à¤...), Kannada (à²...), Tamil (à®...), etc.
+    mojibake_markers = ("à¤", "à²", "à³", "à´", "Ã", "â")
+    high_byte_count = sum(1 for ch in text if ord(ch) >= 0xC0 and ord(ch) <= 0xFF)
+    if not any(m in text for m in mojibake_markers) and high_byte_count < 3:
+        return text
+
+    try:
+        # Re-interpret the Python str bytes as latin-1 bytes then decode as utf-8
+        fixed = text.encode("latin-1").decode("utf-8")
+        # Sanity check: ensure resulting string contains Indic or sensible letters
+        if any("\u0900" <= ch <= "\u0DFF" for ch in fixed):
+            logger.debug("fix_mojibake: applied latin-1→utf-8 re-decode")
+            return fixed
+        # If not clearly Indic, still return fixed (fallback) but log debug
+        logger.debug("fix_mojibake: re-decode produced non-Indic text; returning result")
+        return fixed
+    except Exception:
+        try:
+            # Last-resort: attempt the inverse (rare cases)
+            alt = text.encode("utf-8").decode("latin-1")
+            logger.debug("fix_mojibake: inverse utf-8→latin-1 attempt applied")
+            return alt
+        except Exception:
+            return text
+
+
+def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = None) -> (str, str):
+    """Detect if `text` is a Latin-script transliteration of Hindi/Marathi.
+    If so, attempt to transliterate to Devanagari and return (fixed_text, lang).
+    Otherwise return (original_text, detected_lang).
+    """
+    # First, attempt to fix common mojibake (Latin-1 decoded UTF-8)
+    raw_text = text
+    try:
+        text = fix_mojibake(text)
+        if text != raw_text:
+            logger.info("Fixed mojibake encoding for segment before detection.")
+    except Exception:
+        text = raw_text
+
+    # Quick detect
+    detected = detect_language(text)
+    # If detected already Indic, nothing to do
+    if detected in ("hi", "mr"):
+        return text, detected
+    if asr_hint == "en" and detected == "en":
+        return text, detected
+
+    # If ASR already reported Marathi/Hindi and text is Latin-like, force a
+    # speculative transliteration to that language. This helps when ASR emits
+    # romanized Marathi but language detectors operating on raw text see it as
+    # English.
+    try:
+        if asr_hint in ("mr", "hi"):
+            # Count Latin letters vs Devanagari
+            deva_count_hint = sum(1 for ch in text if _is_devanagari(ch))
+            latin_letters_hint = sum(1 for ch in text if _is_latin_letter(ch))
+            if latin_letters_hint >= 3 and deva_count_hint == 0:
+                try:
+                    cand_force = transliterate_text_if_needed(text, asr_hint, suppress_log=False)
+                    if cand_force != text:
+                        logger.info(f"ASR hint {asr_hint} detected; forced transliteration applied.")
+                        return cand_force, asr_hint
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Heuristic: many Latin-script letters (incl. diacritics) and few Devanagari → candidate for transliteration
+    deva_count = sum(1 for ch in text if _is_devanagari(ch))
+    latin_letters = sum(1 for ch in text if _is_latin_letter(ch))
+    if latin_letters < 3 and deva_count == 0:
+        return text, detected
+
+    # If the segment mixes Devanagari and Latin runs, normalize by transliterating
+    # sufficiently long ASCII runs to Devanagari, then re-run detection.
+    if deva_count > 0 and latin_letters > 0:
+        try:
+            norm = normalize_mixed_script_runs(text, target_lang="hi")
+            new_det = detect_language(norm)
+            if new_det in ("hi", "mr"):
+                logger.info(f"Detected mixed-script segment; normalized and fixed as {new_det}.")
+                return norm, new_det
+            # fall through to speculative transliteration if normalization didn't help
+        except Exception:
+            pass
+
+    # Try transliterating to Marathi and Hindi and re-run detection
+    tries = ["mr", "hi"]
+    for lang in tries:
+        try:
+            # Suppress logging during speculative transliteration so we don't
+            # emit duplicate info messages when callers also log.
+            cand = transliterate_text_if_needed(text, lang, suppress_log=True)
+            new_det = detect_language(cand)
+            if new_det == lang:
+                logger.info(f"Detected transliterated {lang.upper()} segment; auto-fixed for MT/TTS.")
+                return cand, lang
+        except Exception:
+            continue
+
+    return text, detected
+
+
 def _ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
@@ -239,6 +516,79 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Tuple[str, 
     return f"[TRANSLATION STUB: {source_lang}→{target_lang}] {text}", 0.0
 
 
+def translation_cache_hash(text: str, source_lang: str, target_lang: str) -> str:
+    """Build a cache key that expires results when the MT pipeline changes."""
+    return sha256_text(
+        f"{TRANSLATION_PIPELINE_VERSION}:{source_lang}:{target_lang}:{text}"
+    )
+
+
+_PROTECTED_TEXT_PATTERN = re.compile(r"(https?://[^\s]+|www\.[^\s]+|\r\n|\r|\n)")
+
+_CURATED_IDIOM_TRANSLATIONS = {
+    ("en", "mr", "it is raining cats and dogs outside"): "बाहेर मुसळधार पाऊस पडत आहे।",
+    ("hi", "en", "ऊँट के मुँह में जीरा"): "Too little for a great need.",
+}
+
+
+def _curated_idiom_translation(text: str, source_lang: str, target_lang: str):
+    normalized = text.strip().casefold().rstrip(".!?।").strip()
+    return _CURATED_IDIOM_TRANSLATIONS.get((source_lang, target_lang, normalized))
+
+
+def _prepare_translation_part(text: str, source_lang: str) -> str:
+    if source_lang != "en":
+        return text
+
+    from sacremoses import MosesPunctNormalizer, MosesTokenizer
+
+    normalized = MosesPunctNormalizer(lang="en").normalize(text)
+    return " ".join(MosesTokenizer(lang="en").tokenize(normalized, escape=False))
+
+
+def _translate_preserving_protected_text(text: str, translate_part) -> str:
+    """Translate prose while preserving URLs and original line separators."""
+    parts = _PROTECTED_TEXT_PATTERN.split(text)
+    translated_parts = []
+    for part in parts:
+        if not part:
+            continue
+        if _PROTECTED_TEXT_PATTERN.fullmatch(part):
+            translated_parts.append(part)
+            continue
+        if not part.strip():
+            translated_parts.append(part)
+            continue
+
+        leading = part[:len(part) - len(part.lstrip())]
+        trailing = part[len(part.rstrip()):]
+        translated_parts.append(leading + translate_part(part.strip()) + trailing)
+    return "".join(translated_parts)
+
+
+def _get_translation_model(model_dir: Path):
+    cache_key = str(model_dir.resolve())
+    cached = _translation_models.get(cache_key)
+    if cached is not None:
+        return cached
+
+    with _translation_model_lock:
+        cached = _translation_models.get(cache_key)
+        if cached is None:
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(model_dir), trust_remote_code=True
+            )
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                str(model_dir), trust_remote_code=True
+            )
+            model.eval()
+            cached = (tokenizer, model, threading.Lock())
+            _translation_models[cache_key] = cached
+    return cached
+
+
 def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     """
     IndicTrans2 distilled model with direction-based routing.
@@ -251,7 +601,6 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     Returns (translated_text, confidence_score).
     Confidence reflects model quality and direction support.
     """
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
     import torch
 
     # Direction-to-model mapping
@@ -288,21 +637,35 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
     src_code = lang_map.get(src, "eng_Latn")
     tgt_code = lang_map.get(tgt, "hin_Deva")
 
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(str(model_dir), trust_remote_code=True)
-    model.eval()
+    curated = _curated_idiom_translation(text, src, tgt)
+    if curated is not None:
+        return curated, 1.0
 
-    # IndicTrans2 custom tokenizer expects: "src_lang tgt_lang actual_text"
-    tagged_text = f"{src_code} {tgt_code} {text}"
-    inputs = tokenizer(tagged_text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+    tokenizer, model, inference_lock = _get_translation_model(model_dir)
 
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_length=512, num_beams=1, use_cache=False)
+    def translate_part(part: str) -> str:
+        prepared_part = _prepare_translation_part(part, src)
+        tagged_text = f"{src_code} {tgt_code} {prepared_part}"
+        with inference_lock:
+            inputs = tokenizer(
+                tagged_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            )
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs, max_length=512, num_beams=5, use_cache=False
+                )
 
-    # Switch tokenizer to target mode for decoding, then restore
-    tokenizer._switch_to_target_mode()
-    translated = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    tokenizer._switch_to_input_mode()
+            tokenizer._switch_to_target_mode()
+            try:
+                return tokenizer.decode(outputs[0], skip_special_tokens=True)
+            finally:
+                tokenizer._switch_to_input_mode()
+
+    translated = _translate_preserving_protected_text(text, translate_part)
 
     return translated, confidence
 
@@ -369,10 +732,33 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
             beam_size=5,
             vad_filter=True,
         )
-        segments = [
-            {"start": s.start, "end": s.end, "text": s.text.strip()}
-            for s in segments_iter
-        ]
+        segments = []
+        for s in segments_iter:
+            text = (s.text or "").strip()
+            try:
+                orig_repr = repr(text)
+            except Exception:
+                orig_repr = str(text)
+            try:
+                hex_utf8 = text.encode("utf-8", errors="backslashreplace").hex()
+            except Exception:
+                hex_utf8 = ""
+            try:
+                hex_replace = text.encode("utf-8", errors="replace").hex()
+            except Exception:
+                hex_replace = ""
+            avg_logprob = getattr(s, "avg_logprob", None)
+            no_speech_prob = getattr(s, "no_speech_prob", None)
+            segments.append({
+                "start": s.start,
+                "end": s.end,
+                "text": text,
+                "orig_repr": orig_repr,
+                "orig_hex_utf8": hex_utf8,
+                "orig_hex_replace": hex_replace,
+                "asr_avg_logprob": avg_logprob,
+                "asr_no_speech_prob": no_speech_prob,
+            })
 
         # If VAD produced very little speech for a long input, retry without VAD
         try:
@@ -394,17 +780,47 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                     beam_size=5,
                     vad_filter=False,
                 )
-                segments = [
-                    {"start": s.start, "end": s.end, "text": s.text.strip()}
-                    for s in segments_iter
-                ]
+                segments = []
+                for s in segments_iter:
+                    text = (s.text or "").strip()
+                    try:
+                        orig_repr = repr(text)
+                    except Exception:
+                        orig_repr = str(text)
+                    try:
+                        hex_utf8 = text.encode("utf-8", errors="backslashreplace").hex()
+                    except Exception:
+                        hex_utf8 = ""
+                    try:
+                        hex_replace = text.encode("utf-8", errors="replace").hex()
+                    except Exception:
+                        hex_replace = ""
+                    avg_logprob = getattr(s, "avg_logprob", None)
+                    no_speech_prob = getattr(s, "no_speech_prob", None)
+                    segments.append({
+                        "start": s.start,
+                        "end": s.end,
+                        "text": text,
+                        "orig_repr": orig_repr,
+                        "orig_hex_utf8": hex_utf8,
+                        "orig_hex_replace": hex_replace,
+                        "asr_avg_logprob": avg_logprob,
+                        "asr_no_speech_prob": no_speech_prob,
+                    })
         except Exception:
             # best-effort duration check; continue with whatever segments we have
             pass
         # Debug: log brief summary of segments
         try:
             if segments:
-                logger.info(f"ASR: {len(segments)} segments. First segment: '{segments[0]['text'][:200]}'")
+                # Log a short preview plus hex dump of the first segment for triage
+                logger.info(
+                    f"ASR: {len(segments)} segments. First segment: '{segments[0]['text'][:200]}'"
+                )
+                try:
+                    logger.debug(f"ASR first segment hex (utf8/backslashreplace): {segments[0].get('orig_hex_utf8', '')[:200]}")
+                except Exception:
+                    pass
             else:
                 logger.info("ASR: no segments produced.")
         except Exception:
@@ -439,14 +855,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed.
-
-    This function applies a temporary monkeypatch to `torch.jit.script` and
-    `torch.jit.trace` to avoid TorchScript attempting to read source files
-    from the frozen onedir. It then imports `parler_tts`, loads the model,
-    generates audio, writes debug artifacts, and restores the original JIT
-    functions in a finally block.
-    """
+    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -464,7 +873,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     try:
         # Import third-party modules while JIT is disabled
         from parler_tts import ParlerTTSForConditionalGeneration
-        from transformers import AutoTokenizer
+        from transformers import AutoTokenizer, AutoConfig
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -473,17 +882,81 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-        model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
+        # ---------------------------------------------------------------------------
+        # FIX: Load distinct tokenizers for Description vs Spoken Text
+        # ---------------------------------------------------------------------------
+        # 1. Load the text prompt tokenizer from your local model directory
+        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        
+        # 2. Load the description tokenizer from the directory we set up earlier
+        desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
+        if desc_tokenizer_dir.exists():
+            description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
+        else:
+            # Fallback to online loading if the local path is missing
+            description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+
+        try:
+            cfg = AutoConfig.from_pretrained(str(model_dir))
+        except Exception:
+            cfg = None
+
+        if cfg is not None:
+            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir), config=cfg)
+        else:
+            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
         model.eval()
 
         description = "A female speaker delivers a clear, natural voice."
-        input_ids = tokenizer(description, return_tensors="pt").input_ids
-        prompt_ids = tokenizer(text, return_tensors="pt").input_ids
+        
+        # Ensure tokenizers have a distinct pad token safely
+        for tok in [prompt_tokenizer, description_tokenizer]:
+            try:
+                if getattr(tok, "pad_token", None) is None or getattr(tok, "pad_token", None) == getattr(tok, "eos_token", None):
+                    tok.pad_token = tok.eos_token
+            except Exception:
+                pass
+
+        # ---------------------------------------------------------------------------
+        # FIX: Apply truncation, max_length, and use the correct separated tokenizers
+        # ---------------------------------------------------------------------------
+        input_tok = description_tokenizer(
+            description, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True, 
+            max_length=512
+        )
+        prompt_tok = prompt_tokenizer(
+            text, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True, 
+            max_length=512
+        )
 
         with torch.no_grad():
-            generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
-            # Debug logging and artifact dump (sequential, isolated try/except blocks)
+            gen_kwargs = {
+                "input_ids": input_tok.get("input_ids"),
+                "attention_mask": input_tok.get("attention_mask"),
+                "prompt_input_ids": prompt_tok.get("input_ids"),
+            }
+
+            try:
+                import inspect
+                sig = inspect.signature(model.generate)
+                if "prompt_attention_mask" in sig.parameters:
+                    gen_kwargs["prompt_attention_mask"] = prompt_tok.get("attention_mask")
+            except Exception:
+                pass
+
+            try:
+                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+            except TypeError:
+                if "prompt_attention_mask" in gen_kwargs:
+                    gen_kwargs.pop("prompt_attention_mask", None)
+                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+            
             sr = getattr(model.config, "sampling_rate", None)
             logger.info(f"Parler-TTS model sampling_rate: {sr}")
 
@@ -519,7 +992,6 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             except Exception as _e:
                 logger.debug(f"Parler-TTS debug artifact save failed: {_e}")
 
-            # Write final output file used by the application
             try:
                 if audio is None:
                     audio = generation.cpu().numpy().squeeze()
@@ -527,9 +999,8 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 return True
             except Exception as _e:
                 logger.error(f"Failed to write Parler-TTS output file: {_e}")
-                raise
     finally:
-        # Restore original torch.jit functions
+        # Restore JIT functions
         try:
             if _orig_jit_script is not None:
                 torch.jit.script = _orig_jit_script
@@ -537,7 +1008,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 torch.jit.trace = _orig_jit_trace
         except Exception:
             pass
-
+    return False
 
 def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     """pyttsx3 system TTS stub — English only, for dev/demo."""

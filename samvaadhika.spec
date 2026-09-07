@@ -14,6 +14,8 @@ Why onedir instead of onefile?
   - BAIF IT can drop model checkpoints into dist/Samvaadhika/models/ directly
 """
 
+import os
+import shutil
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -68,6 +70,25 @@ datas += _add_tree('ffmpeg', 'ffmpeg')
 datas += _add_tree('fonts', 'fonts')
 # Ensure the local `app` package source files are copied into the onedir
 datas += _add_tree('app', 'app')
+
+# Bundle system media/OCR runtimes when they are installed on the build PC.
+ffmpeg_executable = shutil.which("ffmpeg")
+if ffmpeg_executable:
+    datas += _add_tree(Path(ffmpeg_executable).parent, 'ffmpeg/bin')
+else:
+    print("WARNING: FFmpeg not found; audio/video support will require FFmpeg on the target PC.")
+
+tesseract_dir = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR"
+if (tesseract_dir / "tesseract.exe").exists():
+    datas += _add_tree(tesseract_dir, 'tesseract')
+else:
+    print("WARNING: Tesseract not found; OCR support will require Tesseract on the target PC.")
+
+# Numba may load this optional runtime DLL indirectly through audio dependencies.
+binaries = []
+tbb_dir = Path(sys.executable).parent.parent / "Library" / "bin"
+for tbb_dll in tbb_dir.glob("tbb*.dll"):
+    binaries.append((str(tbb_dll), "."))
 
 # Include faster_whisper package data (VAD/ONNX assets used at runtime)
 datas += collect_data_files("faster_whisper")
@@ -198,6 +219,8 @@ hiddenimports += ["parler_tts"]
 datas += collect_data_files("faster_whisper")
 # Ensure audiotools templates/assets required by Parler-TTS are bundled
 datas += collect_data_files("audiotools")
+# Include indic_transliteration package data (sanscript schemes JSON files)
+datas += collect_data_files("indic_transliteration")
 
 # If PyInstaller misses specific ONNX or model files, explicitly include them.
 # Look for ONNX assets under the installed faster_whisper package and for
@@ -258,7 +281,7 @@ except Exception:
 a = Analysis(
     ["launcher.py"],
     pathex=["."],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
