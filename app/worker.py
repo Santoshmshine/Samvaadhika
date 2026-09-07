@@ -170,13 +170,29 @@ def _process_audio_job(job: Job, db):
     job.progress = 50
     db.commit()
 
+    # Prepare debug dir for ASR raw dumps
+    debug_asr_dir = job_out_dir / "debug_asr"
+    debug_asr_dir.mkdir(parents=True, exist_ok=True)
+
     # Step 3: Translate each segment
     translated_segments = []
-    from app.pipeline import detect_and_fix_transliterated_segment
+    from app.pipeline import detect_and_fix_transliterated_segment, fix_mojibake
     report_rows = []
-    for seg in segments:
+    for idx, seg in enumerate(segments, start=1):
+        # write per-segment debug files capturing the raw text repr and hex
+        try:
+            txt_path = debug_asr_dir / f"segment_{idx:04d}_raw.txt"
+            with txt_path.open("w", encoding="utf-8", errors="backslashreplace") as fh:
+                fh.write(seg.get("orig_repr", seg.get("text", "")))
+            hex_path = debug_asr_dir / f"segment_{idx:04d}_hex_utf8.txt"
+            with hex_path.open("w", encoding="utf-8") as fh:
+                fh.write(seg.get("orig_hex_utf8", ""))
+        except Exception:
+            pass
+
+        
         # Attempt to detect and fix Latin-script transliteration (e.g., 'vityanigi riva')
-        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"])
+        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"], asr_hint=detected_lang)
         try:
             if fixed_text != seg["text"]:
                 logger.info(
@@ -197,10 +213,21 @@ def _process_audio_job(job: Job, db):
         translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
         # record for per-job report
         try:
+            orig_raw = seg["text"]
+            try:
+                orig_clean = fix_mojibake(orig_raw)
+            except Exception:
+                orig_clean = orig_raw
             report_rows.append({
                 "start": seg["start"],
                 "end": seg["end"],
-                "orig": seg["text"],
+                "orig_raw": orig_raw,
+                "orig_clean": orig_clean,
+                "orig_repr": seg.get("orig_repr", ""),
+                "orig_hex_utf8": seg.get("orig_hex_utf8", ""),
+                "orig_hex_replace": seg.get("orig_hex_replace", ""),
+                "asr_avg_logprob": seg.get("asr_avg_logprob", None),
+                "asr_no_speech_prob": seg.get("asr_no_speech_prob", None),
                 "fixed": fixed_text,
                 "fixed_lang": fixed_lang,
                 "translated": t_text,
@@ -216,7 +243,15 @@ def _process_audio_job(job: Job, db):
         import csv
         report_path = job_out_dir / "segment_translations.csv"
         with report_path.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["start", "end", "orig", "fixed", "fixed_lang", "translated", "confidence"])
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=[
+                    "start", "end", "orig_raw", "orig_clean",
+                    "orig_repr", "orig_hex_utf8", "orig_hex_replace",
+                    "asr_avg_logprob", "asr_no_speech_prob",
+                    "fixed", "fixed_lang", "translated", "confidence",
+                ],
+            )
             writer.writeheader()
             for r in report_rows:
                 writer.writerow(r)
@@ -276,12 +311,26 @@ def _process_video_job(job: Job, db):
     job.progress = 50
     db.commit()
 
+    # Prepare debug dir for ASR raw dumps
+    debug_asr_dir = job_out_dir / "debug_asr"
+    debug_asr_dir.mkdir(parents=True, exist_ok=True)
+
     # Step 4: Translate each segment
     translated_segments = []
-    from app.pipeline import detect_and_fix_transliterated_segment
+    from app.pipeline import detect_and_fix_transliterated_segment, fix_mojibake
     report_rows = []
-    for seg in segments:
-        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"])
+    for idx, seg in enumerate(segments, start=1):
+        try:
+            txt_path = debug_asr_dir / f"segment_{idx:04d}_raw.txt"
+            with txt_path.open("w", encoding="utf-8", errors="backslashreplace") as fh:
+                fh.write(seg.get("orig_repr", seg.get("text", "")))
+            hex_path = debug_asr_dir / f"segment_{idx:04d}_hex_utf8.txt"
+            with hex_path.open("w", encoding="utf-8") as fh:
+                fh.write(seg.get("orig_hex_utf8", ""))
+        except Exception:
+            pass
+
+        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"], asr_hint=detected_lang)
         try:
             if fixed_text != seg["text"]:
                 logger.info(
@@ -300,10 +349,21 @@ def _process_video_job(job: Job, db):
         t_text = apply_glossary(t_text, job.source_language, job.target_language, db)
         translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
         try:
+            orig_raw = seg["text"]
+            try:
+                orig_clean = fix_mojibake(orig_raw)
+            except Exception:
+                orig_clean = orig_raw
             report_rows.append({
                 "start": seg["start"],
                 "end": seg["end"],
-                "orig": seg["text"],
+                "orig_raw": orig_raw,
+                "orig_clean": orig_clean,
+                "orig_repr": seg.get("orig_repr", ""),
+                "orig_hex_utf8": seg.get("orig_hex_utf8", ""),
+                "orig_hex_replace": seg.get("orig_hex_replace", ""),
+                "asr_avg_logprob": seg.get("asr_avg_logprob", None),
+                "asr_no_speech_prob": seg.get("asr_no_speech_prob", None),
                 "fixed": fixed_text,
                 "fixed_lang": fixed_lang,
                 "translated": t_text,
@@ -319,7 +379,15 @@ def _process_video_job(job: Job, db):
         import csv
         report_path = job_out_dir / "segment_translations.csv"
         with report_path.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=["start", "end", "orig", "fixed", "fixed_lang", "translated", "confidence"])
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=[
+                    "start", "end", "orig_raw", "orig_clean",
+                    "orig_repr", "orig_hex_utf8", "orig_hex_replace",
+                    "asr_avg_logprob", "asr_no_speech_prob",
+                    "fixed", "fixed_lang", "translated", "confidence",
+                ],
+            )
             writer.writeheader()
             for r in report_rows:
                 writer.writerow(r)

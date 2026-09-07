@@ -17,6 +17,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
+import unicodedata
 
 from app.config import (
     CACHE_DIR, OUTPUTS_DIR, UPLOADS_DIR, MODELS_DIR,
@@ -174,26 +175,35 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def transliterate_text_if_needed(text: str, lang: str) -> str:
+def transliterate_text_if_needed(text: str, lang: str, suppress_log: bool = False) -> str:
     """If `lang` is Hindi/Marathi and text appears to be Latin-script,
     attempt to transliterate it to Devanagari for TTS.
     Falls back to returning the original text if the transliteration
     library isn't installed or the heuristic doesn't trigger.
+
+    `suppress_log`: when True, don't emit info-level logs (used by callers
+    that probe multiple transliteration attempts to avoid duplicate messages).
     """
     if lang not in ("hi", "mr") or not text:
         return text
 
-    # Heuristic: count Devanagari vs ASCII letters
-    deva_count = sum(1 for ch in text if "\u0900" <= ch <= "\u097F")
-    ascii_letters = sum(1 for ch in text if ch.isascii() and ch.isalpha())
-    total_letters = max(1, deva_count + ascii_letters)
+    # Quick reject: replacement character indicates decoding issues — skip
+    if "\uFFFD" in text:
+        if not suppress_log:
+            logger.debug("Text contains replacement characters; skipping transliteration.")
+        return text
+
+    # Heuristic: count Devanagari vs Latin-script letters (including diacritics)
+    deva_count = sum(1 for ch in text if _is_devanagari(ch))
+    latin_letters = sum(1 for ch in text if _is_latin_letter(ch))
+    total_letters = max(1, deva_count + latin_letters)
 
     # If already contains a substantial Devanagari portion, skip
     if deva_count / total_letters > 0.3:
         return text
 
-    # If not primarily ASCII transliteration, skip
-    if ascii_letters / total_letters < 0.4:
+    # If not primarily Latin transliteration, skip
+    if latin_letters / total_letters < 0.4:
         return text
 
     try:
@@ -206,35 +216,202 @@ def transliterate_text_if_needed(text: str, lang: str) -> str:
         except Exception:
             dev = transliterate(text, sanscript.IAST, sanscript.DEVANAGARI)
 
-        logger.info("Transliterated Latin-script text to Devanagari for TTS.")
+        if not suppress_log:
+            logger.info("Transliterated Latin-script text to Devanagari for TTS.")
         return dev
     except Exception as e:
-        logger.warning(f"Transliteration unavailable or failed: {e}. Skipping transliteration.")
+        if not suppress_log:
+            logger.warning(f"Transliteration unavailable or failed: {e}. Skipping transliteration.")
         return text
 
 
-def detect_and_fix_transliterated_segment(text: str) -> (str, str):
+def _is_devanagari(ch: str) -> bool:
+    return "\u0900" <= ch <= "\u097F"
+
+
+def _is_ascii_letter(ch: str) -> bool:
+    return ch.isascii() and ch.isalpha()
+
+
+def _is_latin_letter(ch: str) -> bool:
+    """Return True for Latin-script letters, including diacritics (e.g. ǫ, ā)."""
+    if not ch or not ch.isalpha():
+        return False
+    # Fast path: ASCII alpha
+    if ch.isascii():
+        return True
+    # Fallback: check Unicode name for 'LATIN'
+    try:
+        return "LATIN" in unicodedata.name(ch)
+    except Exception:
+        return False
+
+
+def normalize_mixed_script_runs(text: str, target_lang: str = "hi", min_ascii_run_len: int = 3) -> str:
+    """Split text into script runs and transliterate ASCII-letter runs to Devanagari.
+
+    This helps when ASR emits mixed segments like:
+        'शईदि पालन, ... resumes, sirvatum yawasthapan padhati'
+
+    We transliterate only sufficiently long ASCII-letter runs to avoid mangling
+    short acronyms or alphanumerics. Uses `transliterate_text_if_needed` with
+    `suppress_log=True` to avoid noisy duplicate messages during speculative checks.
+    """
+    if not text:
+        return text
+
+    runs = []
+    cur_type = None
+    buf = []
+
+    def flush():
+        if buf:
+            runs.append((cur_type, "".join(buf)))
+
+    for ch in text:
+        if _is_devanagari(ch):
+            t = "deva"
+        elif _is_latin_letter(ch):
+            t = "latin"
+        else:
+            t = "other"
+
+        if cur_type is None:
+            cur_type = t
+            buf.append(ch)
+        elif t == cur_type:
+            buf.append(ch)
+        else:
+            flush()
+            buf = [ch]
+            cur_type = t
+
+    flush()
+
+    out_parts = []
+    changed = False
+    for typ, seg in runs:
+        if typ == "latin" and sum(1 for c in seg if _is_latin_letter(c)) >= min_ascii_run_len and target_lang in ("hi", "mr"):
+            try:
+                new = transliterate_text_if_needed(seg, target_lang, suppress_log=True)
+                if new != seg:
+                    changed = True
+                out_parts.append(new)
+            except Exception:
+                out_parts.append(seg)
+        else:
+            out_parts.append(seg)
+
+    result = "".join(out_parts)
+    if changed:
+        logger.info("Normalized mixed-script segment by transliterating ASCII runs for TTS.")
+    return result
+
+
+def fix_mojibake(text: str) -> str:
+    """Attempt to fix common UTF-8↔Latin-1 mojibake sequences.
+
+    Many pipeline artifacts show sequences like 'à¤¶' when Devanagari
+    UTF-8 bytes were decoded as Latin-1. This helper tries a safe
+    Latin-1 -> UTF-8 re-decode when such patterns are present.
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    # Quick heuristic: presence of many high-byte (Latin-1) characters or
+    # common UTF-8-with-Latin1-decoding markers. This catches mojibake for
+    # Devanagari (à¤...), Kannada (à²...), Tamil (à®...), etc.
+    mojibake_markers = ("à¤", "à²", "à³", "à´", "Ã", "â")
+    high_byte_count = sum(1 for ch in text if ord(ch) >= 0xC0 and ord(ch) <= 0xFF)
+    if not any(m in text for m in mojibake_markers) and high_byte_count < 3:
+        return text
+
+    try:
+        # Re-interpret the Python str bytes as latin-1 bytes then decode as utf-8
+        fixed = text.encode("latin-1").decode("utf-8")
+        # Sanity check: ensure resulting string contains Indic or sensible letters
+        if any("\u0900" <= ch <= "\u0DFF" for ch in fixed):
+            logger.debug("fix_mojibake: applied latin-1→utf-8 re-decode")
+            return fixed
+        # If not clearly Indic, still return fixed (fallback) but log debug
+        logger.debug("fix_mojibake: re-decode produced non-Indic text; returning result")
+        return fixed
+    except Exception:
+        try:
+            # Last-resort: attempt the inverse (rare cases)
+            alt = text.encode("utf-8").decode("latin-1")
+            logger.debug("fix_mojibake: inverse utf-8→latin-1 attempt applied")
+            return alt
+        except Exception:
+            return text
+
+
+def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = None) -> (str, str):
     """Detect if `text` is a Latin-script transliteration of Hindi/Marathi.
     If so, attempt to transliterate to Devanagari and return (fixed_text, lang).
     Otherwise return (original_text, detected_lang).
     """
+    # First, attempt to fix common mojibake (Latin-1 decoded UTF-8)
+    raw_text = text
+    try:
+        text = fix_mojibake(text)
+        if text != raw_text:
+            logger.info("Fixed mojibake encoding for segment before detection.")
+    except Exception:
+        text = raw_text
+
     # Quick detect
     detected = detect_language(text)
     # If detected already Indic, nothing to do
     if detected in ("hi", "mr"):
         return text, detected
 
-    # Heuristic: many ASCII letters and few Devanagari → candidate for transliteration
-    deva_count = sum(1 for ch in text if "\u0900" <= ch <= "\u097F")
-    ascii_letters = sum(1 for ch in text if ch.isascii() and ch.isalpha())
-    if ascii_letters < 3 or deva_count > 0:
+    # If ASR already reported Marathi/Hindi and text is Latin-like, force a
+    # speculative transliteration to that language. This helps when ASR emits
+    # romanized Marathi but language detectors operating on raw text see it as
+    # English.
+    try:
+        if asr_hint in ("mr", "hi"):
+            # Count Latin letters vs Devanagari
+            deva_count_hint = sum(1 for ch in text if _is_devanagari(ch))
+            latin_letters_hint = sum(1 for ch in text if _is_latin_letter(ch))
+            if latin_letters_hint >= 3 and deva_count_hint == 0:
+                try:
+                    cand_force = transliterate_text_if_needed(text, asr_hint, suppress_log=False)
+                    if cand_force != text:
+                        logger.info(f"ASR hint {asr_hint} detected; forced transliteration applied.")
+                        return cand_force, asr_hint
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Heuristic: many Latin-script letters (incl. diacritics) and few Devanagari → candidate for transliteration
+    deva_count = sum(1 for ch in text if _is_devanagari(ch))
+    latin_letters = sum(1 for ch in text if _is_latin_letter(ch))
+    if latin_letters < 3 and deva_count == 0:
         return text, detected
+
+    # If the segment mixes Devanagari and Latin runs, normalize by transliterating
+    # sufficiently long ASCII runs to Devanagari, then re-run detection.
+    if deva_count > 0 and latin_letters > 0:
+        try:
+            norm = normalize_mixed_script_runs(text, target_lang="hi")
+            new_det = detect_language(norm)
+            if new_det in ("hi", "mr"):
+                logger.info(f"Detected mixed-script segment; normalized and fixed as {new_det}.")
+                return norm, new_det
+            # fall through to speculative transliteration if normalization didn't help
+        except Exception:
+            pass
 
     # Try transliterating to Marathi and Hindi and re-run detection
     tries = ["mr", "hi"]
     for lang in tries:
         try:
-            cand = transliterate_text_if_needed(text, lang)
+            # Suppress logging during speculative transliteration so we don't
+            # emit duplicate info messages when callers also log.
+            cand = transliterate_text_if_needed(text, lang, suppress_log=True)
             new_det = detect_language(cand)
             if new_det == lang:
                 logger.info(f"Detected transliterated {lang.upper()} segment; auto-fixed for MT/TTS.")
@@ -438,10 +615,33 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
             beam_size=5,
             vad_filter=True,
         )
-        segments = [
-            {"start": s.start, "end": s.end, "text": s.text.strip()}
-            for s in segments_iter
-        ]
+        segments = []
+        for s in segments_iter:
+            text = (s.text or "").strip()
+            try:
+                orig_repr = repr(text)
+            except Exception:
+                orig_repr = str(text)
+            try:
+                hex_utf8 = text.encode("utf-8", errors="backslashreplace").hex()
+            except Exception:
+                hex_utf8 = ""
+            try:
+                hex_replace = text.encode("utf-8", errors="replace").hex()
+            except Exception:
+                hex_replace = ""
+            avg_logprob = getattr(s, "avg_logprob", None)
+            no_speech_prob = getattr(s, "no_speech_prob", None)
+            segments.append({
+                "start": s.start,
+                "end": s.end,
+                "text": text,
+                "orig_repr": orig_repr,
+                "orig_hex_utf8": hex_utf8,
+                "orig_hex_replace": hex_replace,
+                "asr_avg_logprob": avg_logprob,
+                "asr_no_speech_prob": no_speech_prob,
+            })
 
         # If VAD produced very little speech for a long input, retry without VAD
         try:
@@ -463,17 +663,47 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                     beam_size=5,
                     vad_filter=False,
                 )
-                segments = [
-                    {"start": s.start, "end": s.end, "text": s.text.strip()}
-                    for s in segments_iter
-                ]
+                segments = []
+                for s in segments_iter:
+                    text = (s.text or "").strip()
+                    try:
+                        orig_repr = repr(text)
+                    except Exception:
+                        orig_repr = str(text)
+                    try:
+                        hex_utf8 = text.encode("utf-8", errors="backslashreplace").hex()
+                    except Exception:
+                        hex_utf8 = ""
+                    try:
+                        hex_replace = text.encode("utf-8", errors="replace").hex()
+                    except Exception:
+                        hex_replace = ""
+                    avg_logprob = getattr(s, "avg_logprob", None)
+                    no_speech_prob = getattr(s, "no_speech_prob", None)
+                    segments.append({
+                        "start": s.start,
+                        "end": s.end,
+                        "text": text,
+                        "orig_repr": orig_repr,
+                        "orig_hex_utf8": hex_utf8,
+                        "orig_hex_replace": hex_replace,
+                        "asr_avg_logprob": avg_logprob,
+                        "asr_no_speech_prob": no_speech_prob,
+                    })
         except Exception:
             # best-effort duration check; continue with whatever segments we have
             pass
         # Debug: log brief summary of segments
         try:
             if segments:
-                logger.info(f"ASR: {len(segments)} segments. First segment: '{segments[0]['text'][:200]}'")
+                # Log a short preview plus hex dump of the first segment for triage
+                logger.info(
+                    f"ASR: {len(segments)} segments. First segment: '{segments[0]['text'][:200]}'"
+                )
+                try:
+                    logger.debug(f"ASR first segment hex (utf8/backslashreplace): {segments[0].get('orig_hex_utf8', '')[:200]}")
+                except Exception:
+                    pass
             else:
                 logger.info("ASR: no segments produced.")
         except Exception:
@@ -533,7 +763,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     try:
         # Import third-party modules while JIT is disabled
         from parler_tts import ParlerTTSForConditionalGeneration
-        from transformers import AutoTokenizer
+        from transformers import AutoTokenizer, AutoConfig
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -543,15 +773,84 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             )
 
         tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-        model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
+        # Load explicit config from the model directory so decoder/encoder
+        # sub-configs don't silently overwrite parts of the final config.
+        try:
+            cfg = AutoConfig.from_pretrained(str(model_dir))
+        except Exception:
+            cfg = None
+
+        if cfg is not None:
+            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir), config=cfg)
+        else:
+            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
         model.eval()
 
         description = "A female speaker delivers a clear, natural voice."
-        input_ids = tokenizer(description, return_tensors="pt").input_ids
-        prompt_ids = tokenizer(text, return_tensors="pt").input_ids
+        # Ensure tokenizer has a distinct pad token. Prefer adding '<pad>' as
+        # a special token and resizing model embeddings if supported. If that
+        # fails, fall back to reusing eos_token to avoid crashes.
+        try:
+            pad_token_needed = getattr(tokenizer, "pad_token", None) is None or getattr(tokenizer, "pad_token", None) == getattr(tokenizer, "eos_token", None)
+            if pad_token_needed:
+                pad_token_str = "<pad>"
+                added = False
+                try:
+                    tokenizer.add_special_tokens({"pad_token": pad_token_str})
+                    added = True
+                except Exception:
+                    # Some tokenizers may not support add_special_tokens; set directly
+                    try:
+                        tokenizer.pad_token = pad_token_str
+                    except Exception:
+                        pass
+
+                # If we added tokens, attempt to resize model embeddings
+                if added:
+                    try:
+                        if hasattr(model, "resize_token_embeddings"):
+                            model.resize_token_embeddings(len(tokenizer))
+                    except Exception:
+                        # If resizing fails, revert to eos token fallback
+                        try:
+                            tokenizer.pad_token = tokenizer.eos_token
+                        except Exception:
+                            pass
+        except Exception:
+            try:
+                tokenizer.pad_token = tokenizer.eos_token
+            except Exception:
+                pass
+
+        input_tok = tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        prompt_tok = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=1024)
 
         with torch.no_grad():
-            generation = model.generate(input_ids=input_ids, prompt_input_ids=prompt_ids)
+            # Build generation kwargs and pass attention masks when available.
+            gen_kwargs = {
+                "input_ids": input_tok.get("input_ids"),
+                "attention_mask": input_tok.get("attention_mask"),
+                "prompt_input_ids": prompt_tok.get("input_ids"),
+            }
+
+            # Detect whether model.generate accepts prompt_attention_mask
+            try:
+                import inspect
+                sig = inspect.signature(model.generate)
+                if "prompt_attention_mask" in sig.parameters:
+                    gen_kwargs["prompt_attention_mask"] = prompt_tok.get("attention_mask")
+            except Exception:
+                # If signature inspection fails, attempt to pass prompt_attention_mask
+                # later guarded in a try/except around generate call.
+                pass
+
+            try:
+                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+            except TypeError:
+                # Fallback: remove prompt_attention_mask if it caused TypeError
+                if "prompt_attention_mask" in gen_kwargs:
+                    gen_kwargs.pop("prompt_attention_mask", None)
+                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
             # Debug logging and artifact dump (sequential, isolated try/except blocks)
             sr = getattr(model.config, "sampling_rate", None)
             logger.info(f"Parler-TTS model sampling_rate: {sr}")
