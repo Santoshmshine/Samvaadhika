@@ -11,9 +11,11 @@ are downloaded — each stub logs a clear message and returns a placeholder resu
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -703,6 +705,36 @@ def _insert_pdf_text(page, rect, text: str, font_path: Optional[Path], fontsize:
     return True
 
 
+def _normalize_pdf_text(text: str) -> str:
+    """Remove PDF layout artifacts before text reaches translation."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKC", text)
+    text = text.replace("\ufffd", "")
+    text = "".join(char for char in text if char in "\n\t" or not unicodedata.category(char).startswith("C"))
+    text = re.sub(r"[ \t\xa0]+", " ", text)
+    text = re.sub(r"\s*\n\s*", "\n", text)
+    return text.strip()
+
+
+def _extract_pdf_words(page, rect=None) -> str:
+    """Extract readable text from positioned PDF words without layout padding."""
+    words = page.get_text("words", clip=rect or page.rect, sort=True)
+    if not words:
+        return ""
+    lines = {}
+    for word in words:
+        x0, y0, x1, y1, value = word[:5]
+        value = _normalize_pdf_text(value)
+        if not value:
+            continue
+        key = (round(y0, 1), round(y1, 1))
+        lines.setdefault(key, []).append((x0, value))
+    return _normalize_pdf_text(
+        "\n".join(" ".join(value for _, value in sorted(line)) for line in lines.values())
+    )
+
+
 def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_lang: str, db) -> Tuple[bool, str]:
     """
     Translate a PDF while preserving its page geometry and table/grid layout.
@@ -751,7 +783,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                     translated_any = False
                     for x0, top, x1, bottom in table_cells:
                         cell_rect = fitz.Rect(x0, top, x1, bottom)
-                        cell_text = source_page.crop((x0, top, x1, bottom)).extract_text() or ""
+                        cell_text = _extract_pdf_words(output_page, cell_rect)
                         if not cell_text.strip():
                             continue
                         translated, _ = translate_text(cell_text, source_lang, target_lang)
@@ -777,7 +809,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                         continue
 
                 # For non-table text-native pages, preserve each text line's position.
-                words = source_page.extract_words(keep_blank_chars=True, use_text_flow=True)
+                words = source_page.extract_words(keep_blank_chars=False, use_text_flow=True)
                 lines = {}
                 for word in words:
                     key = (round(word["top"], 1), round(word["bottom"], 1))
@@ -785,7 +817,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                 translated_any = False
                 for (top, bottom), line_words in lines.items():
                     line_words.sort(key=lambda word: word["x0"])
-                    original = " ".join(word["text"] for word in line_words).strip()
+                    original = _normalize_pdf_text(" ".join(word["text"] for word in line_words))
                     if not original:
                         continue
                     translated, _ = translate_text(original, source_lang, target_lang)
