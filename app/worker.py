@@ -203,7 +203,7 @@ def _process_audio_job(job: Job, db):
         except Exception:
             pass
 
-        if fixed_lang in ("hi", "mr") and (job.source_language is None or job.source_language == "en"):
+        if fixed_lang in ("hi", "mr") and job.source_language is None:
             logger.info(f"Job {job.id[:8]} source_language updated: {job.source_language} -> {fixed_lang}")
             job.source_language = fixed_lang
             db.commit()
@@ -242,7 +242,7 @@ def _process_audio_job(job: Job, db):
     try:
         import csv
         report_path = job_out_dir / "segment_translations.csv"
-        with report_path.open("w", encoding="utf-8", newline="") as fh:
+        with report_path.open("w", encoding="utf-8-sig", newline="") as fh:
             writer = csv.DictWriter(
                 fh,
                 fieldnames=[
@@ -403,20 +403,21 @@ def _process_video_job(job: Job, db):
         pass
     job.output_text = full_translated
 
-    # Step 5: TTS (text-to-speech) — preserve input filename
+    # Write subtitles before TTS so a slow or failed speech model does not
+    # prevent the translated SRT from being delivered.
     input_base = Path(job.input_path).stem
-    tts_path = job_out_dir / f"translated_{input_base}.wav"
-    tts_ok = synthesize_speech(full_translated, job.target_language, tts_path)
-    if tts_ok and tts_path.exists():
-        job.audio_output_path = str(tts_path)
-    job.progress = 85
-    db.commit()
-
-    # Step 6: Subtitles — preserve input filename
     srt_path = job_out_dir / f"translated_{input_base}.srt"
     generate_subtitles(segments, translated_segments, srt_path)
     if srt_path.exists():
         job.subtitle_path = str(srt_path)
+    job.progress = 85
+    db.commit()
+
+    # Step 5: TTS (text-to-speech) — preserve input filename
+    tts_path = job_out_dir / f"translated_{input_base}.wav"
+    tts_ok = synthesize_speech(full_translated, job.target_language, tts_path)
+    if tts_ok and tts_path.exists():
+        job.audio_output_path = str(tts_path)
     job.progress = 100
 
 

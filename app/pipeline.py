@@ -388,6 +388,12 @@ def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = N
     if detected in ("hi", "mr"):
         return text, detected
 
+    # A reliable file-level English ASR hint takes precedence over speculative
+    # transliteration. Transliteration turns ordinary English into plausible
+    # Devanagari, which language detection can then misclassify as Marathi.
+    if asr_hint == "en":
+        return text, "en"
+
     # If ASR already reported Marathi/Hindi and text is Latin-like, force a
     # speculative transliteration to that language. This helps when ASR emits
     # romanized Marathi but language detectors operating on raw text see it as
@@ -426,6 +432,10 @@ def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = N
             # fall through to speculative transliteration if normalization didn't help
         except Exception:
             pass
+
+    # Without an Indic ASR hint, do not manufacture Indic text from Latin text.
+    if asr_hint not in ("mr", "hi"):
+        return text, detected
 
     # Try transliterating to Marathi and Hindi and re-run detection
     tries = ["mr", "hi"]
@@ -795,6 +805,13 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             )
 
         tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        description_tokenizer_dir = _find_model_dir("indic-parler-tts-description-tokenizer")
+        if description_tokenizer_dir is None:
+            raise FileNotFoundError(
+                "Parler-TTS description tokenizer not found. Expected at "
+                "models/indic-parler-tts-description-tokenizer/"
+            )
+        description_tokenizer = AutoTokenizer.from_pretrained(str(description_tokenizer_dir))
         # Load explicit config from the model directory so decoder/encoder
         # sub-configs don't silently overwrite parts of the final config.
         try:
@@ -844,7 +861,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             except Exception:
                 pass
 
-        input_tok = tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        input_tok = description_tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
         prompt_tok = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=1024)
 
         with torch.no_grad():
@@ -964,7 +981,7 @@ def generate_subtitles(segments: list, translated_segments: list, output_path: P
                 text=trans["text"],
             )
             subs.append(event)
-        subs.save(str(output_path))
+        subs.save(str(output_path), encoding="utf-8-sig")
         return True
     except Exception as e:
         logger.error(f"Subtitle generation failed: {e}")
