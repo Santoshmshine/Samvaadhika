@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import threading
 from datetime import datetime
 from pathlib import Path
