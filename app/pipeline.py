@@ -388,12 +388,6 @@ def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = N
     if detected in ("hi", "mr"):
         return text, detected
 
-    # A reliable file-level English ASR hint takes precedence over speculative
-    # transliteration. Transliteration turns ordinary English into plausible
-    # Devanagari, which language detection can then misclassify as Marathi.
-    if asr_hint == "en":
-        return text, "en"
-
     # If ASR already reported Marathi/Hindi and text is Latin-like, force a
     # speculative transliteration to that language. This helps when ASR emits
     # romanized Marathi but language detectors operating on raw text see it as
@@ -432,10 +426,6 @@ def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = N
             # fall through to speculative transliteration if normalization didn't help
         except Exception:
             pass
-
-    # Without an Indic ASR hint, do not manufacture Indic text from Latin text.
-    if asr_hint not in ("mr", "hi"):
-        return text, detected
 
     # Try transliterating to Marathi and Hindi and re-run detection
     tries = ["mr", "hi"]
@@ -770,14 +760,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed.
-
-    This function applies a temporary monkeypatch to `torch.jit.script` and
-    `torch.jit.trace` to avoid TorchScript attempting to read source files
-    from the frozen onedir. It then imports `parler_tts`, loads the model,
-    generates audio, writes debug artifacts, and restores the original JIT
-    functions in a finally block.
-    """
+    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -804,16 +787,20 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-        description_tokenizer_dir = _find_model_dir("indic-parler-tts-description-tokenizer")
-        if description_tokenizer_dir is None:
-            raise FileNotFoundError(
-                "Parler-TTS description tokenizer not found. Expected at "
-                "models/indic-parler-tts-description-tokenizer/"
-            )
-        description_tokenizer = AutoTokenizer.from_pretrained(str(description_tokenizer_dir))
-        # Load explicit config from the model directory so decoder/encoder
-        # sub-configs don't silently overwrite parts of the final config.
+        # ---------------------------------------------------------------------------
+        # FIX: Load distinct tokenizers for Description vs Spoken Text
+        # ---------------------------------------------------------------------------
+        # 1. Load the text prompt tokenizer from your local model directory
+        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        
+        # 2. Load the description tokenizer from the directory we set up earlier
+        desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
+        if desc_tokenizer_dir.exists():
+            description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
+        else:
+            # Fallback to online loading if the local path is missing
+            description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
         except Exception:
@@ -826,71 +813,55 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         model.eval()
 
         description = "A female speaker delivers a clear, natural voice."
-        # Ensure tokenizer has a distinct pad token. Prefer adding '<pad>' as
-        # a special token and resizing model embeddings if supported. If that
-        # fails, fall back to reusing eos_token to avoid crashes.
-        try:
-            pad_token_needed = getattr(tokenizer, "pad_token", None) is None or getattr(tokenizer, "pad_token", None) == getattr(tokenizer, "eos_token", None)
-            if pad_token_needed:
-                pad_token_str = "<pad>"
-                added = False
-                try:
-                    tokenizer.add_special_tokens({"pad_token": pad_token_str})
-                    added = True
-                except Exception:
-                    # Some tokenizers may not support add_special_tokens; set directly
-                    try:
-                        tokenizer.pad_token = pad_token_str
-                    except Exception:
-                        pass
-
-                # If we added tokens, attempt to resize model embeddings
-                if added:
-                    try:
-                        if hasattr(model, "resize_token_embeddings"):
-                            model.resize_token_embeddings(len(tokenizer))
-                    except Exception:
-                        # If resizing fails, revert to eos token fallback
-                        try:
-                            tokenizer.pad_token = tokenizer.eos_token
-                        except Exception:
-                            pass
-        except Exception:
+        
+        # Ensure tokenizers have a distinct pad token safely
+        for tok in [prompt_tokenizer, description_tokenizer]:
             try:
-                tokenizer.pad_token = tokenizer.eos_token
+                if getattr(tok, "pad_token", None) is None or getattr(tok, "pad_token", None) == getattr(tok, "eos_token", None):
+                    tok.pad_token = tok.eos_token
             except Exception:
                 pass
 
-        input_tok = description_tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
-        prompt_tok = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=1024)
+        # ---------------------------------------------------------------------------
+        # FIX: Apply truncation, max_length, and use the correct separated tokenizers
+        # ---------------------------------------------------------------------------
+        input_tok = description_tokenizer(
+            description, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True, 
+            max_length=512
+        )
+        prompt_tok = prompt_tokenizer(
+            text, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True, 
+            max_length=512
+        )
 
         with torch.no_grad():
-            # Build generation kwargs and pass attention masks when available.
             gen_kwargs = {
                 "input_ids": input_tok.get("input_ids"),
                 "attention_mask": input_tok.get("attention_mask"),
                 "prompt_input_ids": prompt_tok.get("input_ids"),
             }
 
-            # Detect whether model.generate accepts prompt_attention_mask
             try:
                 import inspect
                 sig = inspect.signature(model.generate)
                 if "prompt_attention_mask" in sig.parameters:
                     gen_kwargs["prompt_attention_mask"] = prompt_tok.get("attention_mask")
             except Exception:
-                # If signature inspection fails, attempt to pass prompt_attention_mask
-                # later guarded in a try/except around generate call.
                 pass
 
             try:
                 generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
             except TypeError:
-                # Fallback: remove prompt_attention_mask if it caused TypeError
                 if "prompt_attention_mask" in gen_kwargs:
                     gen_kwargs.pop("prompt_attention_mask", None)
                 generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
-            # Debug logging and artifact dump (sequential, isolated try/except blocks)
+            
             sr = getattr(model.config, "sampling_rate", None)
             logger.info(f"Parler-TTS model sampling_rate: {sr}")
 
@@ -926,7 +897,6 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             except Exception as _e:
                 logger.debug(f"Parler-TTS debug artifact save failed: {_e}")
 
-            # Write final output file used by the application
             try:
                 if audio is None:
                     audio = generation.cpu().numpy().squeeze()
@@ -934,9 +904,8 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 return True
             except Exception as _e:
                 logger.error(f"Failed to write Parler-TTS output file: {_e}")
-                raise
     finally:
-        # Restore original torch.jit functions
+        # Restore JIT functions
         try:
             if _orig_jit_script is not None:
                 torch.jit.script = _orig_jit_script
@@ -944,7 +913,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 torch.jit.trace = _orig_jit_trace
         except Exception:
             pass
-
+    return False
 
 def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     """pyttsx3 system TTS stub — English only, for dev/demo."""
@@ -981,7 +950,7 @@ def generate_subtitles(segments: list, translated_segments: list, output_path: P
                 text=trans["text"],
             )
             subs.append(event)
-        subs.save(str(output_path), encoding="utf-8-sig")
+        subs.save(str(output_path))
         return True
     except Exception as e:
         logger.error(f"Subtitle generation failed: {e}")
