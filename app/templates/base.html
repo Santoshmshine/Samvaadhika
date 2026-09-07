@@ -21,6 +21,10 @@
   <div class="navbar-user">
     <span class="user-dot"></span>
     <span>{{ user.full_name or user.username }}</span>
+    <a href="/jobs" class="navbar-link">Jobs</a>
+    <button type="button" class="tour-launcher" id="startTourBtn" aria-label="Start guided tour">
+      <span aria-hidden="true">?</span> Tour
+    </button>
     {% if user.role == 'admin' %}
       <span style="font-size:0.7rem;background:rgba(255,255,255,0.2);padding:1px 6px;border-radius:10px;margin-left:4px;">Admin</span>
     {% endif %}
@@ -32,10 +36,33 @@
   {% endif %}
 </nav>
 
+{% if user %}
+<div class="tour-overlay hidden" id="tourOverlay" aria-hidden="true">
+  <div class="tour-popover" id="tourPopover" role="dialog" aria-modal="true" aria-labelledby="tourTitle">
+    <label class="tour-language-label" id="tourLanguageLabel" for="tourLanguage">Tour language</label>
+    <select class="tour-language-select" id="tourLanguage" aria-label="Tour language">
+      <option value="en">English</option>
+      <option value="hi">हिन्दी</option>
+      <option value="mr">मराठी</option>
+    </select>
+    <div class="tour-progress" id="tourProgress"></div>
+    <h2 id="tourTitle">Welcome to Samvaadhika</h2>
+    <p id="tourDescription"></p>
+    <div class="tour-actions">
+      <button type="button" class="tour-skip" id="tourSkipBtn">Skip tour</button>
+      <div class="tour-navigation">
+        <button type="button" class="btn btn-secondary btn-sm" id="tourBackBtn">Back</button>
+        <button type="button" class="btn btn-primary btn-sm" id="tourNextBtn">Next</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- ── PAGE CONTENT ── -->
 {% block content %}{% endblock %}
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=2"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
