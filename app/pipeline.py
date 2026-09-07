@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -28,20 +29,22 @@ from app.config import (
 logger = logging.getLogger("samvaadhika.pipeline")
 
 # ---------------------------------------------------------------------------
-# Ensure ffmpeg is on PATH (winget installs to a deep location)
+# Ensure bundled or installed media/OCR tools are on PATH.
 # ---------------------------------------------------------------------------
 _FFMPEG_SEARCH_DIRS = [
+    BASE_DIR / "ffmpeg" / "bin",
+    Path(sys.executable).resolve().parent / "ffmpeg" / "bin" if getattr(sys, "frozen", False) else Path(),
     Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages",
     Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "ffmpeg" / "bin",
     Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "ffmpeg" / "bin",
 ]
 
 def _ensure_ffmpeg_on_path():
-    """Find ffmpeg installed by winget (or other locations) and add to PATH."""
+    """Find bundled or installed FFmpeg and add it to PATH."""
     if shutil.which("ffmpeg"):
         return  # already available
     for search_root in _FFMPEG_SEARCH_DIRS:
-        if not search_root.exists():
+        if not search_root or not search_root.exists():
             continue
         for ffmpeg_exe in search_root.rglob("ffmpeg.exe"):
             bin_dir = str(ffmpeg_exe.parent)
@@ -51,6 +54,25 @@ def _ensure_ffmpeg_on_path():
     logger.warning("ffmpeg not found in any known location. Video/audio processing may fail.")
 
 _ensure_ffmpeg_on_path()
+
+
+def _ensure_tesseract_on_path():
+    """Find bundled or installed Tesseract and add it to PATH."""
+    candidates = [
+        BASE_DIR / "tesseract" / "tesseract.exe",
+        Path(sys.executable).resolve().parent / "tesseract" / "tesseract.exe" if getattr(sys, "frozen", False) else Path(),
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Tesseract-OCR" / "tesseract.exe",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            os.environ["PATH"] = str(candidate.parent) + os.pathsep + os.environ.get("PATH", "")
+            os.environ.setdefault("TESSDATA_PREFIX", str(candidate.parent / "tessdata"))
+            logger.info(f"Using Tesseract from: {candidate}")
+            return
+    logger.warning("Tesseract not found. OCR features may fail.")
+
+
+_ensure_tesseract_on_path()
 
 
 # ---------------------------------------------------------------------------
