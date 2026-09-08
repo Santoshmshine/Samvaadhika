@@ -167,11 +167,13 @@ async def upload_file(
 
     # Hash for dedup
     file_hash = sha256_file(upload_path)
-    cached = db.query(Job).filter(
-        Job.input_hash == file_hash,
-        Job.target_language == target_language,
-        Job.status == "completed",
-    ).first()
+    cached = None
+    if job_type == "document":
+        cached = db.query(Job).filter(
+            Job.input_hash == file_hash,
+            Job.target_language == target_language,
+            Job.status == "completed",
+        ).first()
 
     if cached:
         log = AuditLog(

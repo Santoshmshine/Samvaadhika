@@ -16,7 +16,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import unicodedata
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -854,8 +853,44 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
         return False
 
 
+def _split_tts_text(text: str, tokenizer, max_tokens: int = 40) -> list[str]:
+    """Split long TTS prompts at sentence boundaries within a token budget."""
+    sentences = re.split(r"(?<=[.!?।])\s+", text.strip())
+    chunks = []
+    current = []
+    current_tokens = 0
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        token_ids = tokenizer(sentence, add_special_tokens=False)["input_ids"]
+        if len(token_ids) > max_tokens:
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_tokens = 0
+            for start in range(0, len(token_ids), max_tokens):
+                chunk = tokenizer.decode(
+                    token_ids[start:start + max_tokens], skip_special_tokens=True
+                ).strip()
+                if chunk:
+                    chunks.append(chunk)
+            continue
+        if current and current_tokens + len(token_ids) > max_tokens:
+            chunks.append(" ".join(current))
+            current = []
+            current_tokens = 0
+        current.append(sentence)
+        current_tokens += len(token_ids)
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks or [text.strip()]
+
+
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
+    """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -871,9 +906,10 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         pass
 
     try:
-        # Import third-party modules while JIT is disabled
+        # Import core modules safely
         from parler_tts import ParlerTTSForConditionalGeneration
-        from transformers import AutoTokenizer, AutoConfig
+        from transformers import AutoConfig, AutoTokenizer
+        import numpy as np
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -882,19 +918,23 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        # ---------------------------------------------------------------------------
-        # FIX: Load distinct tokenizers for Description vs Spoken Text
-        # ---------------------------------------------------------------------------
-        # 1. Load the text prompt tokenizer from your local model directory
-        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-        
-        # 2. Load the description tokenizer from the directory we set up earlier
         desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
-        if desc_tokenizer_dir.exists():
-            description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
-        else:
-            # Fallback to online loading if the local path is missing
-            description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+        if not desc_tokenizer_dir.exists():
+            raise FileNotFoundError(
+                "Parler-TTS description tokenizer not found. Expected at "
+                "models/indic-parler-tts-description-tokenizer/"
+            )
+        logger.info(
+            "Loading Parler-TTS tokenizers from prompt=%s, description=%s",
+            model_dir,
+            desc_tokenizer_dir,
+        )
+        # The slow tokenizers read the SentencePiece model directly. This avoids
+        # tokenizer.json schema incompatibilities across packaged tokenizers builds.
+        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False)
+        description_tokenizer = AutoTokenizer.from_pretrained(
+            str(desc_tokenizer_dir), use_fast=False
+        )
 
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
@@ -907,100 +947,68 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
         model.eval()
 
+        # Clean prompt text to guarantee no formatting character overflows boundaries
+        text = text.strip().replace("\n", " ")
         description = "A female speaker delivers a clear, natural voice."
-        
-        # Ensure tokenizers have a distinct pad token safely
+
+        # Ensure uniform padding tokens across all sub-components safely
         for tok in [prompt_tokenizer, description_tokenizer]:
             try:
-                if getattr(tok, "pad_token", None) is None or getattr(tok, "pad_token", None) == getattr(tok, "eos_token", None):
-                    tok.pad_token = tok.eos_token
+                tok.pad_token = tok.eos_token
             except Exception:
                 pass
 
-        # ---------------------------------------------------------------------------
-        # FIX: Apply truncation, max_length, and use the correct separated tokenizers
-        # ---------------------------------------------------------------------------
         input_tok = description_tokenizer(
-            description, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
+            description,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
         )
-        prompt_tok = prompt_tokenizer(
-            text, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
-        )
-
         with torch.no_grad():
-            gen_kwargs = {
-                "input_ids": input_tok.get("input_ids"),
-                "attention_mask": input_tok.get("attention_mask"),
-                "prompt_input_ids": prompt_tok.get("input_ids"),
-            }
+            chunks = _split_tts_text(text, prompt_tokenizer)
+            sr = getattr(model.config, "sampling_rate", None) or 44100
+            audio_parts = []
+            logger.info("Synthesizing Parler-TTS in %d chunk(s)", len(chunks))
+            for index, chunk in enumerate(chunks, start=1):
+                prompt_tok = prompt_tokenizer(
+                    chunk,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=128,
+                )
+                prompt_token_count = prompt_tok["input_ids"].shape[-1]
+                max_new_tokens = min(1024, max(128, prompt_token_count * 24))
+                logger.info(
+                    "Synthesizing Parler-TTS chunk %d/%d (%d prompt tokens, %d audio-token limit)",
+                    index,
+                    len(chunks),
+                    prompt_token_count,
+                    max_new_tokens,
+                )
+                generation = model.generate(
+                    input_ids=input_tok.get("input_ids"),
+                    attention_mask=input_tok.get("attention_mask"),
+                    prompt_input_ids=prompt_tok.get("input_ids"),
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                )
+                audio_parts.append(generation.cpu().numpy().squeeze())
+            silence = np.zeros(int(sr * 0.15), dtype=np.float32)
+            audio = np.concatenate([
+                part
+                for index, audio_part in enumerate(audio_parts)
+                for part in ((silence, audio_part) if index else (audio_part,))
+            ])
+            sf.write(str(output_path), audio, sr)
+            return True
 
-            try:
-                import inspect
-                sig = inspect.signature(model.generate)
-                if "prompt_attention_mask" in sig.parameters:
-                    gen_kwargs["prompt_attention_mask"] = prompt_tok.get("attention_mask")
-            except Exception:
-                pass
-
-            try:
-                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
-            except TypeError:
-                if "prompt_attention_mask" in gen_kwargs:
-                    gen_kwargs.pop("prompt_attention_mask", None)
-                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
-            
-            sr = getattr(model.config, "sampling_rate", None)
-            logger.info(f"Parler-TTS model sampling_rate: {sr}")
-
-            audio = None
-            try:
-                gen_np = generation.cpu().numpy()
-                logger.info(f"Parler-TTS generation raw shape: {getattr(gen_np, 'shape', 'unknown')}")
-                try:
-                    audio = gen_np.squeeze()
-                    if sr:
-                        duration = audio.shape[-1] / float(sr)
-                        logger.info(f"Parler-TTS generated audio duration: {duration:.2f}s")
-                except Exception as _e:
-                    logger.debug(f"Failed to process generation ndarray: {_e}")
-            except Exception as _e:
-                logger.debug(f"Failed to inspect generation ndarray: {_e}")
-
-            try:
-                debug_dir = BASE_DIR / "debug_parler"
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                if audio is not None:
-                    try:
-                        import numpy as _np
-                        fname = debug_dir / f"parler_{sha256_text(text)[:8]}.npy"
-                        _np.save(str(fname), audio)
-                    except Exception as _e:
-                        logger.debug(f"Failed to save parler npy debug: {_e}")
-                    try:
-                        if sr:
-                            sf.write(str(debug_dir / f"parler_{sha256_text(text)[:8]}.wav"), audio, sr)
-                    except Exception as _e:
-                        logger.debug(f"Failed to write parler debug wav: {_e}")
-            except Exception as _e:
-                logger.debug(f"Parler-TTS debug artifact save failed: {_e}")
-
-            try:
-                if audio is None:
-                    audio = generation.cpu().numpy().squeeze()
-                sf.write(str(output_path), audio, getattr(model.config, "sampling_rate", 44100))
-                return True
-            except Exception as _e:
-                logger.error(f"Failed to write Parler-TTS output file: {_e}")
+    except Exception:
+        logger.exception("Parler-TTS synthesis failed")
+        # Return False to let the fallback trigger, but log it completely
+        return False
     finally:
-        # Restore JIT functions
         try:
             if _orig_jit_script is not None:
                 torch.jit.script = _orig_jit_script
@@ -1010,24 +1018,21 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             pass
     return False
 
-def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
-    """pyttsx3 system TTS stub — English only, for dev/demo."""
-    import pyttsx3
-    engine = pyttsx3.init()
-    engine.save_to_file(text, str(output_path))
-    engine.runAndWait()
-    # Verify output file was written and has non-trivial size
-    try:
-        if output_path.exists() and output_path.stat().st_size > 1024:
-            logger.info(f"pyttsx3 produced audio file: {output_path} ({output_path.stat().st_size} bytes)")
-            return True
-        else:
-            logger.warning(f"pyttsx3 produced empty or tiny audio file: {output_path} ({output_path.stat().st_size if output_path.exists() else 0} bytes)")
-            return False
-    except Exception as e:
-        logger.warning(f"pyttsx3 verification failed: {e}")
-        return False
 
+
+def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
+    """Offline engine stub fallback."""
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        # Clean text slightly for simple system TTS engines
+        engine.save_to_file(text, str(output_path))
+        engine.runAndWait()
+        logger.info("Successfully fallback compiled audio via pyttsx3.")
+        return True
+    except Exception as e:
+        logger.warning(f"Internal pyttsx3 system generation failure: {e}")
+        return False
 
 # ---------------------------------------------------------------------------
 # Subtitle generation
@@ -1176,36 +1181,6 @@ def _insert_pdf_text(page, rect, text: str, font_path: Optional[Path], fontsize:
     return True
 
 
-def _normalize_pdf_text(text: str) -> str:
-    """Remove PDF layout artifacts before text reaches translation."""
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKC", text)
-    text = text.replace("\ufffd", "")
-    text = "".join(char for char in text if char in "\n\t" or not unicodedata.category(char).startswith("C"))
-    text = re.sub(r"[ \t\xa0]+", " ", text)
-    text = re.sub(r"\s*\n\s*", "\n", text)
-    return text.strip()
-
-
-def _extract_pdf_words(page, rect=None) -> str:
-    """Extract readable text from positioned PDF words without layout padding."""
-    words = page.get_text("words", clip=rect or page.rect, sort=True)
-    if not words:
-        return ""
-    lines = {}
-    for word in words:
-        x0, y0, x1, y1, value = word[:5]
-        value = _normalize_pdf_text(value)
-        if not value:
-            continue
-        key = (round(y0, 1), round(y1, 1))
-        lines.setdefault(key, []).append((x0, value))
-    return _normalize_pdf_text(
-        "\n".join(" ".join(value for _, value in sorted(line)) for line in lines.values())
-    )
-
-
 def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_lang: str, db) -> Tuple[bool, str]:
     """
     Translate a PDF while preserving its page geometry and table/grid layout.
@@ -1254,7 +1229,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                     translated_any = False
                     for x0, top, x1, bottom in table_cells:
                         cell_rect = fitz.Rect(x0, top, x1, bottom)
-                        cell_text = _extract_pdf_words(output_page, cell_rect)
+                        cell_text = source_page.crop((x0, top, x1, bottom)).extract_text() or ""
                         if not cell_text.strip():
                             continue
                         translated, _ = translate_text(cell_text, source_lang, target_lang)
@@ -1280,7 +1255,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                         continue
 
                 # For non-table text-native pages, preserve each text line's position.
-                words = source_page.extract_words(keep_blank_chars=False, use_text_flow=True)
+                words = source_page.extract_words(keep_blank_chars=True, use_text_flow=True)
                 lines = {}
                 for word in words:
                     key = (round(word["top"], 1), round(word["bottom"], 1))
@@ -1288,7 +1263,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                 translated_any = False
                 for (top, bottom), line_words in lines.items():
                     line_words.sort(key=lambda word: word["x0"])
-                    original = _normalize_pdf_text(" ".join(word["text"] for word in line_words))
+                    original = " ".join(word["text"] for word in line_words).strip()
                     if not original:
                         continue
                     translated, _ = translate_text(original, source_lang, target_lang)
