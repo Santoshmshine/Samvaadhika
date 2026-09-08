@@ -760,7 +760,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
+    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed with unified processor alignment."""
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -777,7 +777,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
 
     try:
         # Import third-party modules while JIT is disabled
-        from parler_tts import ParlerTTSForConditionalGeneration
+        from parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSProcessor
         from transformers import AutoTokenizer, AutoConfig
         import soundfile as sf
 
@@ -787,13 +787,22 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        # Load tokenizers safely
-        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-        desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
-        if desc_tokenizer_dir.exists():
-            description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
-        else:
-            description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+        # ---------------------------------------------------------------------------
+        # FIX 1: Initialize using ParlerTTSProcessor to natively sync inputs
+        # ---------------------------------------------------------------------------
+        try:
+            processor = ParlerTTSProcessor.from_pretrained(str(model_dir))
+            description_tokenizer = processor.tokenizer
+            prompt_tokenizer = processor.tokenizer
+        except Exception:
+            # Fallback to loading the internal structure manually if processor init fails
+            prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+            desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
+            if desc_tokenizer_dir.exists():
+                description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
+            else:
+                description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+            processor = None
 
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
@@ -806,75 +815,76 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
         model.eval()
 
+        # Clean prompt text to guarantee no formatting character overflows boundaries
+        text = text.strip().replace("\n", " ")
         description = "A female speaker delivers a clear, natural voice."
-        
-        # Unify pad token strategies to prevent cross-attention size errors
+
+              # Ensure uniform padding tokens across all sub-components
+        if processor is not None:
+            try:
+                processor.tokenizer.pad_token = processor.tokenizer.eos_token
+            except Exception:
+                pass
         for tok in [prompt_tokenizer, description_tokenizer]:
             try:
                 tok.pad_token = tok.eos_token
             except Exception:
                 pass
 
-        # Tokenize with safety boundaries
-        input_tok = description_tokenizer(
-            description, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
-        )
-        prompt_tok = prompt_tokenizer(
-            text, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
-        )
+        # ---------------------------------------------------------------------------
+        # FIX 2: Safely parse inputs using the processor layout or token bounds
+        # ---------------------------------------------------------------------------
+        if processor is not None:
+            inputs = processor(
+                text=text,
+                description=description,
+                return_tensors="pt",
+                max_length=512,
+                truncation=True,
+                padding=True
+            )
+            input_ids = inputs.get("input_ids")
+            attention_mask = inputs.get("attention_mask")
+            prompt_input_ids = inputs.get("prompt_input_ids")
+            prompt_attention_mask = inputs.get("prompt_attention_mask")
+        else:
+            # Manual fallback tokenization layout
+            input_tok = description_tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
+            prompt_tok = prompt_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+            input_ids = input_tok.get("input_ids")
+            attention_mask = input_tok.get("attention_mask")
+            prompt_input_ids = prompt_tok.get("input_ids")
+            prompt_attention_mask = prompt_tok.get("attention_mask")
 
         with torch.no_grad():
-            # ---------------------------------------------------------------------------
-            # FIX: Explicitly limit the generation output to fit inside the 4096 decoder map
-            # ---------------------------------------------------------------------------
             gen_kwargs = {
-                "input_ids": input_tok.get("input_ids"),
-                "attention_mask": input_tok.get("attention_mask"),
-                "prompt_input_ids": prompt_tok.get("input_ids"),
-                "max_new_tokens": 2048,  # Prevents output generation from overrunning bounds
-                "do_sample": False       # Ensures stable deterministic synthesis layout
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "prompt_input_ids": prompt_input_ids,
+                "prompt_attention_mask": prompt_attention_mask,
+                "max_new_tokens": 1024,  # Heavily bounded generation window size to prevent index overflow
+                "do_sample": False
             }
 
-            try:
-                import inspect
-                sig = inspect.signature(model.generate)
-                if "prompt_attention_mask" in sig.parameters:
-                    gen_kwargs["prompt_attention_mask"] = prompt_tok.get("attention_mask")
-            except Exception:
-                pass
+            # Filter out keys with None elements safely
+            clean_gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
 
             try:
-                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+                generation = model.generate(**clean_gen_kwargs)
             except TypeError:
-                if "prompt_attention_mask" in gen_kwargs:
-                    gen_kwargs.pop("prompt_attention_mask", None)
-                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+                # Remove secondary prompt attention masks if the model variation signature doesn't take them
+                clean_gen_kwargs.pop("prompt_attention_mask", None)
+                generation = model.generate(**clean_gen_kwargs)
             
-            sr = getattr(model.config, "sampling_rate", None)
-            logger.info(f"Parler-TTS model sampling_rate: {sr}")
+            sr = getattr(model.config, "sampling_rate", None) or 44100
+            
+            audio = generation.cpu().numpy().squeeze()
+            sf.write(str(output_path), audio, sr)
+            return True
 
-            audio = None
-            try:
-                gen_np = generation.cpu().numpy()
-                audio = gen_np.squeeze()
-            except Exception as _e:
-                logger.debug(f"Failed to process generation ndarray: {_e}")
-
-            try:
-                if audio is None:
-                    audio = generation.cpu().numpy().squeeze()
-                sf.write(str(output_path), audio, getattr(model.config, "sampling_rate", 44100))
-                return True
-            except Exception as _e:
-                logger.error(f"Failed to write Parler-TTS output file: {_e}")
+    except Exception as e:
+        logger.error(f"Parler-TTS core processing failed with exception: {e}")
+        raise e
     finally:
         try:
             if _orig_jit_script is not None:
@@ -885,6 +895,20 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             pass
     return False
 
+
+def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
+    """Offline engine stub fallback."""
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        # Clean text slightly for simple system TTS engines
+        engine.save_to_file(text, str(output_path))
+        engine.runAndWait()
+        logger.info("Successfully fallback compiled audio via pyttsx3.")
+        return True
+    except Exception as e:
+        logger.warning(f"Internal pyttsx3 system generation failure: {e}")
+        return False
 
 # ---------------------------------------------------------------------------
 # Subtitle generation
