@@ -872,7 +872,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     try:
         # Import core modules safely
         from parler_tts import ParlerTTSForConditionalGeneration
-        from transformers import AutoTokenizer, AutoConfig, AutoProcessor
+        from transformers import AutoConfig, AutoTokenizer
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -881,23 +881,14 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        # ---------------------------------------------------------------------------
-        # FIX: Version-Agnostic Processor Resolution
-        # ---------------------------------------------------------------------------
-        processor = None
-        try:
-            # Attempt to use general AutoProcessor which handles older model structures
-            processor = AutoProcessor.from_pretrained(str(model_dir))
-            description_tokenizer = processor.tokenizer
-            prompt_tokenizer = processor.tokenizer
-        except Exception:
-            # Fall back to explicit manual mapping if AutoProcessor fails
-            prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-            desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
-            if desc_tokenizer_dir.exists():
-                description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
-            else:
-                description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
+        if not desc_tokenizer_dir.exists():
+            raise FileNotFoundError(
+                "Parler-TTS description tokenizer not found. Expected at "
+                "models/indic-parler-tts-description-tokenizer/"
+            )
+        description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
 
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
@@ -915,50 +906,33 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         description = "A female speaker delivers a clear, natural voice."
 
         # Ensure uniform padding tokens across all sub-components safely
-        if processor is not None and hasattr(processor, "tokenizer"):
-            try:
-                processor.tokenizer.pad_token = processor.tokenizer.eos_token
-            except Exception:
-                pass
         for tok in [prompt_tokenizer, description_tokenizer]:
             try:
                 tok.pad_token = tok.eos_token
             except Exception:
                 pass
 
-        # Safely parse inputs using the processor layout or token bounds
-        if processor is not None:
-            try:
-                inputs = processor(
-                    text=text,
-                    description=description,
-                    return_tensors="pt",
-                    max_length=512,
-                    truncation=True,
-                    padding=True
-                )
-                input_ids = inputs.get("input_ids")
-                attention_mask = inputs.get("attention_mask")
-                prompt_input_ids = inputs.get("prompt_input_ids")
-                prompt_attention_mask = inputs.get("prompt_attention_mask")
-            except Exception:
-                # Fall through to manual tokenization if processor runtime calls fail
-                processor = None
-
-        if processor is None:
-            input_tok = description_tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
-            prompt_tok = prompt_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
-            input_ids = input_tok.get("input_ids")
-            attention_mask = input_tok.get("attention_mask")
-            prompt_input_ids = prompt_tok.get("input_ids")
-            prompt_attention_mask = prompt_tok.get("attention_mask")
+        input_tok = description_tokenizer(
+            description,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        )
+        prompt_tok = prompt_tokenizer(
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        )
 
         with torch.no_grad():
             gen_kwargs = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "prompt_input_ids": prompt_input_ids,
-                "prompt_attention_mask": prompt_attention_mask,
+                "input_ids": input_tok.get("input_ids"),
+                "attention_mask": input_tok.get("attention_mask"),
+                "prompt_input_ids": prompt_tok.get("input_ids"),
+                "prompt_attention_mask": prompt_tok.get("attention_mask"),
                 "max_new_tokens": 1024,
                 "do_sample": False
             }
