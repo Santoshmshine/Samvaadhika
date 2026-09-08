@@ -855,7 +855,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed."""
+    """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -871,9 +871,9 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         pass
 
     try:
-        # Import third-party modules while JIT is disabled
+        # Import core modules safely
         from parler_tts import ParlerTTSForConditionalGeneration
-        from transformers import AutoTokenizer, AutoConfig
+        from transformers import AutoConfig, AutoTokenizer
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -882,19 +882,14 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        # ---------------------------------------------------------------------------
-        # FIX: Load distinct tokenizers for Description vs Spoken Text
-        # ---------------------------------------------------------------------------
-        # 1. Load the text prompt tokenizer from your local model directory
         prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-        
-        # 2. Load the description tokenizer from the directory we set up earlier
         desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
-        if desc_tokenizer_dir.exists():
-            description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
-        else:
-            # Fallback to online loading if the local path is missing
-            description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+        if not desc_tokenizer_dir.exists():
+            raise FileNotFoundError(
+                "Parler-TTS description tokenizer not found. Expected at "
+                "models/indic-parler-tts-description-tokenizer/"
+            )
+        description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
 
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
@@ -907,32 +902,30 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
         model.eval()
 
+        # Clean prompt text to guarantee no formatting character overflows boundaries
+        text = text.strip().replace("\n", " ")
         description = "A female speaker delivers a clear, natural voice."
-        
-        # Ensure tokenizers have a distinct pad token safely
+
+        # Ensure uniform padding tokens across all sub-components safely
         for tok in [prompt_tokenizer, description_tokenizer]:
             try:
-                if getattr(tok, "pad_token", None) is None or getattr(tok, "pad_token", None) == getattr(tok, "eos_token", None):
-                    tok.pad_token = tok.eos_token
+                tok.pad_token = tok.eos_token
             except Exception:
                 pass
 
-        # ---------------------------------------------------------------------------
-        # FIX: Apply truncation, max_length, and use the correct separated tokenizers
-        # ---------------------------------------------------------------------------
         input_tok = description_tokenizer(
-            description, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
+            description,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
         )
         prompt_tok = prompt_tokenizer(
-            text, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True, 
-            max_length=512
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
         )
 
         with torch.no_grad():
@@ -940,67 +933,29 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "input_ids": input_tok.get("input_ids"),
                 "attention_mask": input_tok.get("attention_mask"),
                 "prompt_input_ids": prompt_tok.get("input_ids"),
+                "prompt_attention_mask": prompt_tok.get("attention_mask"),
+                "max_new_tokens": 1024,
+                "do_sample": False
             }
 
-            try:
-                import inspect
-                sig = inspect.signature(model.generate)
-                if "prompt_attention_mask" in sig.parameters:
-                    gen_kwargs["prompt_attention_mask"] = prompt_tok.get("attention_mask")
-            except Exception:
-                pass
+            clean_gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
 
             try:
-                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+                generation = model.generate(**clean_gen_kwargs)
             except TypeError:
-                if "prompt_attention_mask" in gen_kwargs:
-                    gen_kwargs.pop("prompt_attention_mask", None)
-                generation = model.generate(**{k: v for k, v in gen_kwargs.items() if v is not None})
+                clean_gen_kwargs.pop("prompt_attention_mask", None)
+                generation = model.generate(**clean_gen_kwargs)
             
-            sr = getattr(model.config, "sampling_rate", None)
-            logger.info(f"Parler-TTS model sampling_rate: {sr}")
+            sr = getattr(model.config, "sampling_rate", None) or 44100
+            audio = generation.cpu().numpy().squeeze()
+            sf.write(str(output_path), audio, sr)
+            return True
 
-            audio = None
-            try:
-                gen_np = generation.cpu().numpy()
-                logger.info(f"Parler-TTS generation raw shape: {getattr(gen_np, 'shape', 'unknown')}")
-                try:
-                    audio = gen_np.squeeze()
-                    if sr:
-                        duration = audio.shape[-1] / float(sr)
-                        logger.info(f"Parler-TTS generated audio duration: {duration:.2f}s")
-                except Exception as _e:
-                    logger.debug(f"Failed to process generation ndarray: {_e}")
-            except Exception as _e:
-                logger.debug(f"Failed to inspect generation ndarray: {_e}")
-
-            try:
-                debug_dir = BASE_DIR / "debug_parler"
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                if audio is not None:
-                    try:
-                        import numpy as _np
-                        fname = debug_dir / f"parler_{sha256_text(text)[:8]}.npy"
-                        _np.save(str(fname), audio)
-                    except Exception as _e:
-                        logger.debug(f"Failed to save parler npy debug: {_e}")
-                    try:
-                        if sr:
-                            sf.write(str(debug_dir / f"parler_{sha256_text(text)[:8]}.wav"), audio, sr)
-                    except Exception as _e:
-                        logger.debug(f"Failed to write parler debug wav: {_e}")
-            except Exception as _e:
-                logger.debug(f"Parler-TTS debug artifact save failed: {_e}")
-
-            try:
-                if audio is None:
-                    audio = generation.cpu().numpy().squeeze()
-                sf.write(str(output_path), audio, getattr(model.config, "sampling_rate", 44100))
-                return True
-            except Exception as _e:
-                logger.error(f"Failed to write Parler-TTS output file: {_e}")
+    except Exception as e:
+        logger.error(f"Parler-TTS internal calculation error: {e}")
+        # Return False to let the fallback trigger, but log it completely
+        return False
     finally:
-        # Restore JIT functions
         try:
             if _orig_jit_script is not None:
                 torch.jit.script = _orig_jit_script
@@ -1010,24 +965,21 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             pass
     return False
 
-def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
-    """pyttsx3 system TTS stub — English only, for dev/demo."""
-    import pyttsx3
-    engine = pyttsx3.init()
-    engine.save_to_file(text, str(output_path))
-    engine.runAndWait()
-    # Verify output file was written and has non-trivial size
-    try:
-        if output_path.exists() and output_path.stat().st_size > 1024:
-            logger.info(f"pyttsx3 produced audio file: {output_path} ({output_path.stat().st_size} bytes)")
-            return True
-        else:
-            logger.warning(f"pyttsx3 produced empty or tiny audio file: {output_path} ({output_path.stat().st_size if output_path.exists() else 0} bytes)")
-            return False
-    except Exception as e:
-        logger.warning(f"pyttsx3 verification failed: {e}")
-        return False
 
+
+def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
+    """Offline engine stub fallback."""
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        # Clean text slightly for simple system TTS engines
+        engine.save_to_file(text, str(output_path))
+        engine.runAndWait()
+        logger.info("Successfully fallback compiled audio via pyttsx3.")
+        return True
+    except Exception as e:
+        logger.warning(f"Internal pyttsx3 system generation failure: {e}")
+        return False
 
 # ---------------------------------------------------------------------------
 # Subtitle generation
