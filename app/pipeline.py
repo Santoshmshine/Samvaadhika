@@ -760,7 +760,7 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
 
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
-    """AI4Bharat Indic Parler-TTS — Apache-2.0 licensed with unified processor alignment."""
+    """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -776,9 +776,9 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         pass
 
     try:
-        # Import third-party modules while JIT is disabled
-        from parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSProcessor
-        from transformers import AutoTokenizer, AutoConfig
+        # Import core modules safely
+        from parler_tts import ParlerTTSForConditionalGeneration
+        from transformers import AutoTokenizer, AutoConfig, AutoProcessor
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -788,21 +788,22 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             )
 
         # ---------------------------------------------------------------------------
-        # FIX 1: Initialize using ParlerTTSProcessor to natively sync inputs
+        # FIX: Version-Agnostic Processor Resolution
         # ---------------------------------------------------------------------------
+        processor = None
         try:
-            processor = ParlerTTSProcessor.from_pretrained(str(model_dir))
+            # Attempt to use general AutoProcessor which handles older model structures
+            processor = AutoProcessor.from_pretrained(str(model_dir))
             description_tokenizer = processor.tokenizer
             prompt_tokenizer = processor.tokenizer
         except Exception:
-            # Fallback to loading the internal structure manually if processor init fails
+            # Fall back to explicit manual mapping if AutoProcessor fails
             prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
             desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
             if desc_tokenizer_dir.exists():
                 description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
             else:
                 description_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
-            processor = None
 
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
@@ -819,8 +820,8 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         text = text.strip().replace("\n", " ")
         description = "A female speaker delivers a clear, natural voice."
 
-              # Ensure uniform padding tokens across all sub-components
-        if processor is not None:
+        # Ensure uniform padding tokens across all sub-components safely
+        if processor is not None and hasattr(processor, "tokenizer"):
             try:
                 processor.tokenizer.pad_token = processor.tokenizer.eos_token
             except Exception:
@@ -831,24 +832,26 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             except Exception:
                 pass
 
-        # ---------------------------------------------------------------------------
-        # FIX 2: Safely parse inputs using the processor layout or token bounds
-        # ---------------------------------------------------------------------------
+        # Safely parse inputs using the processor layout or token bounds
         if processor is not None:
-            inputs = processor(
-                text=text,
-                description=description,
-                return_tensors="pt",
-                max_length=512,
-                truncation=True,
-                padding=True
-            )
-            input_ids = inputs.get("input_ids")
-            attention_mask = inputs.get("attention_mask")
-            prompt_input_ids = inputs.get("prompt_input_ids")
-            prompt_attention_mask = inputs.get("prompt_attention_mask")
-        else:
-            # Manual fallback tokenization layout
+            try:
+                inputs = processor(
+                    text=text,
+                    description=description,
+                    return_tensors="pt",
+                    max_length=512,
+                    truncation=True,
+                    padding=True
+                )
+                input_ids = inputs.get("input_ids")
+                attention_mask = inputs.get("attention_mask")
+                prompt_input_ids = inputs.get("prompt_input_ids")
+                prompt_attention_mask = inputs.get("prompt_attention_mask")
+            except Exception:
+                # Fall through to manual tokenization if processor runtime calls fail
+                processor = None
+
+        if processor is None:
             input_tok = description_tokenizer(description, return_tensors="pt", padding=True, truncation=True, max_length=512)
             prompt_tok = prompt_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
             input_ids = input_tok.get("input_ids")
@@ -862,29 +865,27 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "attention_mask": attention_mask,
                 "prompt_input_ids": prompt_input_ids,
                 "prompt_attention_mask": prompt_attention_mask,
-                "max_new_tokens": 1024,  # Heavily bounded generation window size to prevent index overflow
+                "max_new_tokens": 1024,
                 "do_sample": False
             }
 
-            # Filter out keys with None elements safely
             clean_gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
 
             try:
                 generation = model.generate(**clean_gen_kwargs)
             except TypeError:
-                # Remove secondary prompt attention masks if the model variation signature doesn't take them
                 clean_gen_kwargs.pop("prompt_attention_mask", None)
                 generation = model.generate(**clean_gen_kwargs)
             
             sr = getattr(model.config, "sampling_rate", None) or 44100
-            
             audio = generation.cpu().numpy().squeeze()
             sf.write(str(output_path), audio, sr)
             return True
 
     except Exception as e:
-        logger.error(f"Parler-TTS core processing failed with exception: {e}")
-        raise e
+        logger.error(f"Parler-TTS internal calculation error: {e}")
+        # Return False to let the fallback trigger, but log it completely
+        return False
     finally:
         try:
             if _orig_jit_script is not None:
@@ -894,6 +895,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         except Exception:
             pass
     return False
+
 
 
 def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
