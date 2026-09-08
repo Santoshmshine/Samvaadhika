@@ -286,7 +286,8 @@ def _process_audio_job(job: Job, db):
 def _process_video_job(job: Job, db):
     from app.pipeline import (
         extract_audio_from_video, normalize_audio, transcribe_audio,
-        translate_text, apply_glossary, synthesize_speech, generate_subtitles,
+        translate_text, apply_glossary, generate_subtitles,
+        mux_translated_video, probe_media_duration, synthesize_timed_speech,
     )
 
     input_path = Path(job.input_path)
@@ -413,11 +414,29 @@ def _process_video_job(job: Job, db):
     job.progress = 85
     db.commit()
 
-    # Step 5: TTS (text-to-speech) — preserve input filename
+    # Step 5: Generate timestamp-aligned translated speech.
     tts_path = job_out_dir / f"translated_{input_base}.wav"
-    tts_ok = synthesize_speech(full_translated, job.target_language, tts_path)
-    if tts_ok and tts_path.exists():
-        job.audio_output_path = str(tts_path)
+    video_duration = probe_media_duration(input_path)
+    synthesize_timed_speech(
+        translated_segments,
+        job.target_language,
+        tts_path,
+        video_duration,
+    )
+    job.audio_output_path = str(tts_path)
+    job.progress = 95
+    db.commit()
+
+    # Step 6: Replace the source audio and embed the translated SRT as a soft track.
+    video_output_path = job_out_dir / f"translated_{input_base}.mp4"
+    mux_translated_video(
+        input_path,
+        tts_path,
+        srt_path,
+        video_output_path,
+        job.target_language,
+    )
+    job.video_output_path = str(video_output_path)
     job.progress = 100
 
 

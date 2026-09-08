@@ -169,6 +169,9 @@
                 {% if job.subtitle_path %}
                 <br/><a class="btn-download" href="/jobs/{{ job.id }}/download/subtitles">📝 Subtitles ↓</a>
                 {% endif %}
+                {% if job.video_output_path %}
+                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download/video">Translated Video ↓</a>
+                {% endif %}
               {% elif job.status == 'processing' %}
                 <span class="badge badge-processing">Processing</span>
               {% elif job.status == 'failed' %}
@@ -440,6 +443,7 @@ function updateJobRow(data) {
     if (data.has_output_file) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download">📄 Document ↓</a>`;
     if (data.has_audio) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/audio">🔊 Audio ↓</a>`;
     if (data.has_subtitles) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/subtitles">📝 Subtitles ↓</a>`;
+    if (data.has_video) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/video">Translated Video ↓</a>`;
     action.innerHTML = `<span class="badge badge-completed">Completed</span>` + links;
   } else if (data.status === 'failed') {
     action.innerHTML = `<span class="badge badge-failed">Failed</span>`;

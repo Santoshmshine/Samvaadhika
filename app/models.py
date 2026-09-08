@@ -69,6 +69,7 @@ class Job(Base):
     output_text = Column(Text, nullable=True)
     subtitle_path = Column(String(512), nullable=True)
     audio_output_path = Column(String(512), nullable=True)
+    video_output_path = Column(String(512), nullable=True)
 
     # Quality / confidence
     confidence_score = Column(Float, nullable=True)

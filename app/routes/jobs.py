@@ -55,6 +55,7 @@ async def job_status(job_id: str, request: Request, db: Session = Depends(get_db
         "has_output_file": bool(job.output_path and Path(job.output_path).exists()),
         "has_audio": bool(job.audio_output_path and Path(job.audio_output_path).exists()),
         "has_subtitles": bool(job.subtitle_path and Path(job.subtitle_path).exists()),
+        "has_video": bool(job.video_output_path and Path(job.video_output_path).exists()),
         "needs_review": job.needs_review,
         "confidence_score": job.confidence_score,
         "review_notes": job.review_notes,
@@ -104,6 +105,21 @@ async def download_subtitles(job_id: str, request: Request, db: Session = Depend
     if not job.subtitle_path or not Path(job.subtitle_path).exists():
         raise HTTPException(404, "Subtitle file not found")
     return FileResponse(path=job.subtitle_path, filename="subtitles.srt", media_type="text/plain")
+
+
+@router.get("/jobs/{job_id}/download/video")
+async def download_video(job_id: str, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job or (job.owner_id != user.id and user.role != "admin"):
+        raise HTTPException(403, "Access denied")
+    if not job.video_output_path or not Path(job.video_output_path).exists():
+        raise HTTPException(404, "Video output not found")
+    return FileResponse(
+        path=job.video_output_path,
+        filename=Path(job.video_output_path).name,
+        media_type="video/mp4",
+    )
 
 
 @router.delete("/jobs/{job_id}")

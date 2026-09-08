@@ -132,6 +132,8 @@ _whisper_model = None
 _lang_detector = None
 _translation_models = {}
 _translation_model_lock = threading.Lock()
+_parler_runtime = None
+_parler_lock = threading.Lock()
 
 TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
 
@@ -891,6 +893,7 @@ def _split_tts_text(text: str, tokenizer, max_tokens: int = 40) -> list[str]:
 
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
+    global _parler_runtime
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -912,40 +915,47 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         import numpy as np
         import soundfile as sf
 
-        model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
-        if model_dir is None:
-            raise FileNotFoundError(
-                "Parler-TTS model not found. Expected at models/indic-parler-tts/"
-            )
+        with _parler_lock:
+            if _parler_runtime is None:
+                model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
+                if model_dir is None:
+                    raise FileNotFoundError(
+                        "Parler-TTS model not found. Expected at models/indic-parler-tts/"
+                    )
 
-        desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
-        if not desc_tokenizer_dir.exists():
-            raise FileNotFoundError(
-                "Parler-TTS description tokenizer not found. Expected at "
-                "models/indic-parler-tts-description-tokenizer/"
-            )
-        logger.info(
-            "Loading Parler-TTS tokenizers from prompt=%s, description=%s",
-            model_dir,
-            desc_tokenizer_dir,
-        )
-        # The slow tokenizers read the SentencePiece model directly. This avoids
-        # tokenizer.json schema incompatibilities across packaged tokenizers builds.
-        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False)
-        description_tokenizer = AutoTokenizer.from_pretrained(
-            str(desc_tokenizer_dir), use_fast=False
-        )
+                desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
+                if not desc_tokenizer_dir.exists():
+                    raise FileNotFoundError(
+                        "Parler-TTS description tokenizer not found. Expected at "
+                        "models/indic-parler-tts-description-tokenizer/"
+                    )
+                logger.info(
+                    "Loading Parler-TTS tokenizers from prompt=%s, description=%s",
+                    model_dir,
+                    desc_tokenizer_dir,
+                )
+                prompt_tokenizer = AutoTokenizer.from_pretrained(
+                    str(model_dir), use_fast=False
+                )
+                description_tokenizer = AutoTokenizer.from_pretrained(
+                    str(desc_tokenizer_dir), use_fast=False
+                )
 
-        try:
-            cfg = AutoConfig.from_pretrained(str(model_dir))
-        except Exception:
-            cfg = None
+                try:
+                    cfg = AutoConfig.from_pretrained(str(model_dir))
+                except Exception:
+                    cfg = None
 
-        if cfg is not None:
-            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir), config=cfg)
-        else:
-            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
-        model.eval()
+                if cfg is not None:
+                    model = ParlerTTSForConditionalGeneration.from_pretrained(
+                        str(model_dir), config=cfg
+                    )
+                else:
+                    model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
+                model.eval()
+                _parler_runtime = (model, prompt_tokenizer, description_tokenizer)
+            else:
+                model, prompt_tokenizer, description_tokenizer = _parler_runtime
 
         # Clean prompt text to guarantee no formatting character overflows boundaries
         text = text.strip().replace("\n", " ")
@@ -965,7 +975,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             truncation=True,
             max_length=512,
         )
-        with torch.no_grad():
+        with _parler_lock, torch.no_grad():
             chunks = _split_tts_text(text, prompt_tokenizer)
             sr = getattr(model.config, "sampling_rate", None) or 44100
             audio_parts = []
@@ -1033,6 +1043,124 @@ def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     except Exception as e:
         logger.warning(f"Internal pyttsx3 system generation failure: {e}")
         return False
+
+
+def _atempo_filter(tempo: float) -> str:
+    """Build an FFmpeg atempo chain using conservative 0.5-2.0 factors."""
+    factors = []
+    while tempo > 2.0:
+        factors.append(2.0)
+        tempo /= 2.0
+    while tempo < 0.5:
+        factors.append(0.5)
+        tempo /= 0.5
+    factors.append(tempo)
+    return ",".join(f"atempo={factor:.6f}" for factor in factors)
+
+
+def _fit_audio_to_slot(input_path: Path, output_path: Path, duration: float, sample_rate: int) -> None:
+    """Speed up overlong speech, then pad or trim it to an exact timeline slot."""
+    import soundfile as sf
+
+    source_duration = sf.info(str(input_path)).duration
+    filters = []
+    if source_duration > duration:
+        filters.append(_atempo_filter(source_duration / duration))
+    filters.extend(["apad", f"atrim=duration={duration:.6f}"])
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-af", ",".join(filters),
+        "-ar", str(sample_rate), "-ac", "1", "-c:a", "pcm_s16le",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio alignment failed: {result.stderr.decode(errors='replace')}")
+
+
+def synthesize_timed_speech(
+    translated_segments: list,
+    language: str,
+    output_path: Path,
+    total_duration: float,
+    synthesizer=synthesize_speech,
+    sample_rate: int = 44100,
+) -> bool:
+    """Synthesize each subtitle segment and place it at its original timestamp."""
+    import numpy as np
+    import soundfile as sf
+
+    if not _ffmpeg_available():
+        raise RuntimeError("ffmpeg is required for synchronized translated audio.")
+    if total_duration <= 0:
+        raise ValueError("Video duration must be positive.")
+
+    timeline = np.zeros(round(total_duration * sample_rate), dtype=np.float32)
+    rendered = 0
+    with tempfile.TemporaryDirectory(prefix="samvaadhika-dub-") as temp_dir:
+        temp_path = Path(temp_dir)
+        for index, segment in enumerate(translated_segments, start=1):
+            start = max(0.0, float(segment["start"]))
+            end = min(total_duration, float(segment["end"]))
+            text = str(segment.get("text", "")).strip()
+            if not text or end <= start:
+                continue
+
+            raw_path = temp_path / f"segment_{index:04d}_raw.wav"
+            fitted_path = temp_path / f"segment_{index:04d}_fitted.wav"
+            spoken_text = transliterate_text_if_needed(text, language)
+            if not synthesizer(spoken_text, language, raw_path) or not raw_path.exists():
+                raise RuntimeError(f"TTS failed for translated segment {index}.")
+            _fit_audio_to_slot(raw_path, fitted_path, end - start, sample_rate)
+            audio, _ = sf.read(str(fitted_path), dtype="float32", always_2d=False)
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            start_sample = round(start * sample_rate)
+            end_sample = min(len(timeline), start_sample + len(audio))
+            timeline[start_sample:end_sample] += audio[:end_sample - start_sample]
+            rendered += 1
+
+    if not rendered:
+        raise RuntimeError("No translated speech segments were generated.")
+    sf.write(str(output_path), np.clip(timeline, -1.0, 1.0), sample_rate, subtype="PCM_16")
+    return True
+
+
+def probe_media_duration(media_path: Path) -> float:
+    """Return media duration in seconds using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(media_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.decode(errors='replace')}")
+    return float(result.stdout.decode().strip())
+
+
+def mux_translated_video(
+    video_path: Path,
+    audio_path: Path,
+    subtitle_path: Path,
+    output_path: Path,
+    subtitle_language: str,
+) -> bool:
+    """Mux original video, synchronized translated audio, and soft subtitles into MP4."""
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path),
+        "-i", str(subtitle_path), "-map", "0:v:0", "-map", "1:a:0", "-map", "2:0",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
+        "-metadata:s:s:0", f"language={subtitle_language}", "-movflags", "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=1800)
+    if result.returncode != 0:
+        cmd[cmd.index("copy")] = "libx264"
+        cmd[cmd.index("-c:a"):cmd.index("-c:a")] = ["-preset", "medium", "-crf", "20"]
+        result = subprocess.run(cmd, capture_output=True, timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg video mux failed: {result.stderr.decode(errors='replace')}")
+    return True
 
 # ---------------------------------------------------------------------------
 # Subtitle generation

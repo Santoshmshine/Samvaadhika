@@ -69,6 +69,9 @@
                     {% if job.subtitle_path %}
                     <a href="/jobs/{{ job.id }}/download/subtitles" class="btn btn-secondary btn-sm">↓ SRT</a>
                     {% endif %}
+                    {% if job.video_output_path %}
+                    <a href="/jobs/{{ job.id }}/download/video" class="btn btn-primary btn-sm">↓ Video</a>
+                    {% endif %}
                   {% elif job.status == 'failed' %}
                     <span style="font-size:0.75rem;color:var(--danger);" title="{{ job.error_message }}">
                       {{ (job.error_message or 'Unknown error')[:40] }}…
@@ -126,6 +129,7 @@ document.querySelectorAll('[data-status="processing"],[data-status="queued"]').f
       <a id="downloadFileBtn" class="btn btn-primary btn-sm" style="display:none;">Download file</a>
       <a id="downloadAudioBtn" class="btn btn-secondary btn-sm" style="display:none;">Download audio</a>
       <a id="downloadSubsBtn" class="btn btn-secondary btn-sm" style="display:none;">Download SRT</a>
+      <a id="downloadVideoBtn" class="btn btn-primary btn-sm" style="display:none;">Download video</a>
     </div>
   </div>
 </div>
@@ -155,14 +159,17 @@ async function loadJobDetails(jobId) {
   const dlFile = document.getElementById('downloadFileBtn');
   const dlAudio = document.getElementById('downloadAudioBtn');
   const dlSubs = document.getElementById('downloadSubsBtn');
+  const dlVideo = document.getElementById('downloadVideoBtn');
   cancelBtn.style.display = (data.status === 'queued' || data.status === 'processing') ? 'inline-block' : 'none';
   dlFile.style.display = data.has_output_file ? 'inline-block' : 'none';
   dlAudio.style.display = data.has_audio ? 'inline-block' : 'none';
   dlSubs.style.display = data.has_subtitles ? 'inline-block' : 'none';
+  dlVideo.style.display = data.has_video ? 'inline-block' : 'none';
 
   dlFile.href = `/jobs/${jobId}/download`;
   dlAudio.href = `/jobs/${jobId}/download/audio`;
   dlSubs.href = `/jobs/${jobId}/download/subtitles`;
+  dlVideo.href = `/jobs/${jobId}/download/video`;
 
   cancelBtn.onclick = async () => {
     if (!confirm('Cancel this job?')) return;
