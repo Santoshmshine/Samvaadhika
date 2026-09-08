@@ -16,7 +16,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import unicodedata
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -854,6 +853,42 @@ def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
         return False
 
 
+def _split_tts_text(text: str, tokenizer, max_tokens: int = 40) -> list[str]:
+    """Split long TTS prompts at sentence boundaries within a token budget."""
+    sentences = re.split(r"(?<=[.!?।])\s+", text.strip())
+    chunks = []
+    current = []
+    current_tokens = 0
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        token_ids = tokenizer(sentence, add_special_tokens=False)["input_ids"]
+        if len(token_ids) > max_tokens:
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_tokens = 0
+            for start in range(0, len(token_ids), max_tokens):
+                chunk = tokenizer.decode(
+                    token_ids[start:start + max_tokens], skip_special_tokens=True
+                ).strip()
+                if chunk:
+                    chunks.append(chunk)
+            continue
+        if current and current_tokens + len(token_ids) > max_tokens:
+            chunks.append(" ".join(current))
+            current = []
+            current_tokens = 0
+        current.append(sentence)
+        current_tokens += len(token_ids)
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks or [text.strip()]
+
+
 def _tts_parler(text: str, language: str, output_path: Path) -> bool:
     """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
     import torch
@@ -874,6 +909,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         # Import core modules safely
         from parler_tts import ParlerTTSForConditionalGeneration
         from transformers import AutoConfig, AutoTokenizer
+        import numpy as np
         import soundfile as sf
 
         model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
@@ -882,14 +918,23 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
                 "Parler-TTS model not found. Expected at models/indic-parler-tts/"
             )
 
-        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
         desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
         if not desc_tokenizer_dir.exists():
             raise FileNotFoundError(
                 "Parler-TTS description tokenizer not found. Expected at "
                 "models/indic-parler-tts-description-tokenizer/"
             )
-        description_tokenizer = AutoTokenizer.from_pretrained(str(desc_tokenizer_dir))
+        logger.info(
+            "Loading Parler-TTS tokenizers from prompt=%s, description=%s",
+            model_dir,
+            desc_tokenizer_dir,
+        )
+        # The slow tokenizers read the SentencePiece model directly. This avoids
+        # tokenizer.json schema incompatibilities across packaged tokenizers builds.
+        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False)
+        description_tokenizer = AutoTokenizer.from_pretrained(
+            str(desc_tokenizer_dir), use_fast=False
+        )
 
         try:
             cfg = AutoConfig.from_pretrained(str(model_dir))
@@ -920,39 +965,47 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             truncation=True,
             max_length=512,
         )
-        prompt_tok = prompt_tokenizer(
-            text,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512,
-        )
-
         with torch.no_grad():
-            gen_kwargs = {
-                "input_ids": input_tok.get("input_ids"),
-                "attention_mask": input_tok.get("attention_mask"),
-                "prompt_input_ids": prompt_tok.get("input_ids"),
-                "prompt_attention_mask": prompt_tok.get("attention_mask"),
-                "max_new_tokens": 1024,
-                "do_sample": False
-            }
-
-            clean_gen_kwargs = {k: v for k, v in gen_kwargs.items() if v is not None}
-
-            try:
-                generation = model.generate(**clean_gen_kwargs)
-            except TypeError:
-                clean_gen_kwargs.pop("prompt_attention_mask", None)
-                generation = model.generate(**clean_gen_kwargs)
-            
+            chunks = _split_tts_text(text, prompt_tokenizer)
             sr = getattr(model.config, "sampling_rate", None) or 44100
-            audio = generation.cpu().numpy().squeeze()
+            audio_parts = []
+            logger.info("Synthesizing Parler-TTS in %d chunk(s)", len(chunks))
+            for index, chunk in enumerate(chunks, start=1):
+                prompt_tok = prompt_tokenizer(
+                    chunk,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=128,
+                )
+                prompt_token_count = prompt_tok["input_ids"].shape[-1]
+                max_new_tokens = min(1024, max(128, prompt_token_count * 24))
+                logger.info(
+                    "Synthesizing Parler-TTS chunk %d/%d (%d prompt tokens, %d audio-token limit)",
+                    index,
+                    len(chunks),
+                    prompt_token_count,
+                    max_new_tokens,
+                )
+                generation = model.generate(
+                    input_ids=input_tok.get("input_ids"),
+                    attention_mask=input_tok.get("attention_mask"),
+                    prompt_input_ids=prompt_tok.get("input_ids"),
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                )
+                audio_parts.append(generation.cpu().numpy().squeeze())
+            silence = np.zeros(int(sr * 0.15), dtype=np.float32)
+            audio = np.concatenate([
+                part
+                for index, audio_part in enumerate(audio_parts)
+                for part in ((silence, audio_part) if index else (audio_part,))
+            ])
             sf.write(str(output_path), audio, sr)
             return True
 
-    except Exception as e:
-        logger.error(f"Parler-TTS internal calculation error: {e}")
+    except Exception:
+        logger.exception("Parler-TTS synthesis failed")
         # Return False to let the fallback trigger, but log it completely
         return False
     finally:
@@ -1128,36 +1181,6 @@ def _insert_pdf_text(page, rect, text: str, font_path: Optional[Path], fontsize:
     return True
 
 
-def _normalize_pdf_text(text: str) -> str:
-    """Remove PDF layout artifacts before text reaches translation."""
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKC", text)
-    text = text.replace("\ufffd", "")
-    text = "".join(char for char in text if char in "\n\t" or not unicodedata.category(char).startswith("C"))
-    text = re.sub(r"[ \t\xa0]+", " ", text)
-    text = re.sub(r"\s*\n\s*", "\n", text)
-    return text.strip()
-
-
-def _extract_pdf_words(page, rect=None) -> str:
-    """Extract readable text from positioned PDF words without layout padding."""
-    words = page.get_text("words", clip=rect or page.rect, sort=True)
-    if not words:
-        return ""
-    lines = {}
-    for word in words:
-        x0, y0, x1, y1, value = word[:5]
-        value = _normalize_pdf_text(value)
-        if not value:
-            continue
-        key = (round(y0, 1), round(y1, 1))
-        lines.setdefault(key, []).append((x0, value))
-    return _normalize_pdf_text(
-        "\n".join(" ".join(value for _, value in sorted(line)) for line in lines.values())
-    )
-
-
 def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_lang: str, db) -> Tuple[bool, str]:
     """
     Translate a PDF while preserving its page geometry and table/grid layout.
@@ -1206,7 +1229,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                     translated_any = False
                     for x0, top, x1, bottom in table_cells:
                         cell_rect = fitz.Rect(x0, top, x1, bottom)
-                        cell_text = _extract_pdf_words(output_page, cell_rect)
+                        cell_text = source_page.crop((x0, top, x1, bottom)).extract_text() or ""
                         if not cell_text.strip():
                             continue
                         translated, _ = translate_text(cell_text, source_lang, target_lang)
@@ -1232,7 +1255,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                         continue
 
                 # For non-table text-native pages, preserve each text line's position.
-                words = source_page.extract_words(keep_blank_chars=False, use_text_flow=True)
+                words = source_page.extract_words(keep_blank_chars=True, use_text_flow=True)
                 lines = {}
                 for word in words:
                     key = (round(word["top"], 1), round(word["bottom"], 1))
@@ -1240,7 +1263,7 @@ def translate_pdf(input_path: Path, output_path: Path, source_lang: str, target_
                 translated_any = False
                 for (top, bottom), line_words in lines.items():
                     line_words.sort(key=lambda word: word["x0"])
-                    original = _normalize_pdf_text(" ".join(word["text"] for word in line_words))
+                    original = " ".join(word["text"] for word in line_words).strip()
                     if not original:
                         continue
                     translated, _ = translate_text(original, source_lang, target_lang)
