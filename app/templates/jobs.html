@@ -55,7 +55,7 @@
                 {% endif %}
               </td>
               <td style="font-size:0.8rem;color:var(--text-muted);">
-                {{ job.created_at.strftime('%d %b %Y %H:%M') if job.created_at else '—' }}
+                {{ job.created_at | ist('%d %b %Y %H:%M IST') }}
               </td>
               <td>
                 <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">

@@ -836,14 +836,85 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
 # TTS — Text to Speech
 # ---------------------------------------------------------------------------
 
-def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
+TTS_SPEAKERS = {
+    "en": {"male": "Thoma", "female": "Mary"},
+    "hi": {"male": "Rohit", "female": "Divya"},
+    "mr": {"male": "Sanjay", "female": "Sunita"},
+}
+
+
+def detect_dominant_voice_gender(audio_path: Path, speech_segments: Optional[list] = None) -> str:
+    """Classify the dominant source voice from its median fundamental frequency."""
+    import librosa
+    import numpy as np
+
+    audio, sample_rate = librosa.load(str(audio_path), sr=16000, mono=True, duration=60.0)
+    if speech_segments:
+        speech_audio = []
+        for segment in speech_segments:
+            start_sample = max(0, round(float(segment["start"]) * sample_rate))
+            end_sample = min(len(audio), round(float(segment["end"]) * sample_rate))
+            if end_sample > start_sample:
+                speech_audio.append(audio[start_sample:end_sample])
+        if speech_audio:
+            audio = np.concatenate(speech_audio)
+    if audio.size < sample_rate:
+        logger.warning("Voice gender detection received too little audio; using female voice.")
+        return "female"
+
+    fundamental = librosa.yin(
+        audio,
+        fmin=65,
+        fmax=350,
+        sr=sample_rate,
+        frame_length=2048,
+        hop_length=512,
+    )
+    energy = librosa.feature.rms(
+        y=audio,
+        frame_length=2048,
+        hop_length=512,
+    ).squeeze()
+    frame_count = min(len(fundamental), len(energy))
+    fundamental = fundamental[:frame_count]
+    energy = energy[:frame_count]
+    energy_floor = max(0.005, float(np.percentile(energy, 40)))
+    voiced_pitch = fundamental[np.isfinite(fundamental) & (energy >= energy_floor)]
+    if voiced_pitch.size < 10:
+        logger.warning("Voice gender detection found insufficient voiced audio; using female voice.")
+        return "female"
+
+    median_pitch = float(np.median(voiced_pitch))
+    gender = "male" if median_pitch < 170.0 else "female"
+    logger.info("Detected dominant source voice: %s (median pitch %.1f Hz)", gender, median_pitch)
+    return gender
+
+
+def tts_voice_description(language: str, gender: str) -> str:
+    """Build a stable named-speaker caption for an Indic Parler target language."""
+    speakers = TTS_SPEAKERS.get(language, TTS_SPEAKERS["en"])
+    speaker = speakers.get(gender, speakers["female"])
+    return (
+        f"{speaker} speaks at a moderate pace with a natural pitch and a consistent, "
+        "clear tone. The recording is very high quality, close-sounding, and has no "
+        "background noise."
+    )
+
+
+def synthesize_speech(
+    text: str,
+    language: str,
+    output_path: Path,
+    voice_description: Optional[str] = None,
+    seed: int = 42,
+) -> bool:
     """
     Generate speech audio from text using Indic Parler-TTS (preferred)
     or pyttsx3 stub fallback.
     Returns True on success.
     """
     try:
-        return _tts_parler(text, language, output_path)
+        return _tts_parler(text, language, output_path, voice_description, seed)
     except Exception as e:
         logger.warning(f"Parler-TTS unavailable ({e}), trying pyttsx3 stub.")
         logger.debug("Parler-TTS exception details:", exc_info=True)
@@ -891,7 +962,13 @@ def _split_tts_text(text: str, tokenizer, max_tokens: int = 40) -> list[str]:
     return chunks or [text.strip()]
 
 
-def _tts_parler(text: str, language: str, output_path: Path) -> bool:
+def _tts_parler(
+    text: str,
+    language: str,
+    output_path: Path,
+    voice_description: Optional[str] = None,
+    seed: int = 42,
+) -> bool:
     """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
     global _parler_runtime
     import torch
@@ -959,7 +1036,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
 
         # Clean prompt text to guarantee no formatting character overflows boundaries
         text = text.strip().replace("\n", " ")
-        description = "A female speaker delivers a clear, natural voice."
+        description = voice_description or tts_voice_description(language, "female")
 
         # Ensure uniform padding tokens across all sub-components safely
         for tok in [prompt_tokenizer, description_tokenizer]:
@@ -981,6 +1058,7 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             audio_parts = []
             logger.info("Synthesizing Parler-TTS in %d chunk(s)", len(chunks))
             for index, chunk in enumerate(chunks, start=1):
+                torch.manual_seed(seed)
                 prompt_tok = prompt_tokenizer(
                     chunk,
                     return_tensors="pt",
@@ -1085,6 +1163,8 @@ def synthesize_timed_speech(
     total_duration: float,
     synthesizer=synthesize_speech,
     sample_rate: int = 44100,
+    voice_description: Optional[str] = None,
+    seed: int = 42,
 ) -> bool:
     """Synthesize each subtitle segment and place it at its original timestamp."""
     import numpy as np
@@ -1109,7 +1189,13 @@ def synthesize_timed_speech(
             raw_path = temp_path / f"segment_{index:04d}_raw.wav"
             fitted_path = temp_path / f"segment_{index:04d}_fitted.wav"
             spoken_text = transliterate_text_if_needed(text, language)
-            if not synthesizer(spoken_text, language, raw_path) or not raw_path.exists():
+            if not synthesizer(
+                spoken_text,
+                language,
+                raw_path,
+                voice_description=voice_description,
+                seed=seed,
+            ) or not raw_path.exists():
                 raise RuntimeError(f"TTS failed for translated segment {index}.")
             _fit_audio_to_slot(raw_path, fitted_path, end - start, sample_rate)
             audio, _ = sf.read(str(fitted_path), dtype="float32", always_2d=False)

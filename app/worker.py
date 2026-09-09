@@ -287,7 +287,8 @@ def _process_video_job(job: Job, db):
     from app.pipeline import (
         extract_audio_from_video, normalize_audio, transcribe_audio,
         translate_text, apply_glossary, generate_subtitles,
-        mux_translated_video, probe_media_duration, synthesize_timed_speech,
+        detect_dominant_voice_gender, mux_translated_video, probe_media_duration,
+        synthesize_timed_speech, tts_voice_description,
     )
 
     input_path = Path(job.input_path)
@@ -417,11 +418,21 @@ def _process_video_job(job: Job, db):
     # Step 5: Generate timestamp-aligned translated speech.
     tts_path = job_out_dir / f"translated_{input_base}.wav"
     video_duration = probe_media_duration(input_path)
+    voice_gender = detect_dominant_voice_gender(wav_path, segments)
+    voice_description = tts_voice_description(job.target_language, voice_gender)
+    logger.info(
+        "Job %s using consistent %s TTS voice: %s",
+        job.id[:8],
+        voice_gender,
+        voice_description,
+    )
     synthesize_timed_speech(
         translated_segments,
         job.target_language,
         tts_path,
         video_duration,
+        voice_description=voice_description,
+        seed=42,
     )
     job.audio_output_path = str(tts_path)
     job.progress = 95

@@ -48,7 +48,7 @@
                 <span class="badge badge-{{ job.status }}">{{ job.status | capitalize }}</span>
               </td>
               <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">
-                {{ job.created_at.strftime('%d %b %H:%M') if job.created_at else '—' }}
+                {{ job.created_at | ist('%d %b %H:%M IST') }}
               </td>
               <td>
                 {% if job.status == 'failed' %}

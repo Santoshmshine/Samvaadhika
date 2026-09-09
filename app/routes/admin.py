@@ -11,10 +11,12 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, get_password_hash
 from app.config import SUPPORTED_LANGUAGES, TEMPLATES_DIR
 from app.database import get_db
+from app.time_utils import format_ist
 from app.models import AuditLog, GlossaryEntry, Job, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["ist"] = format_ist
 
 
 def require_admin(request: Request, db: Session) -> User:

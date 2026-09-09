@@ -12,9 +12,11 @@ from app.auth import get_current_user
 from app.config import SUPPORTED_LANGUAGES, TEMPLATES_DIR
 from app.database import get_db
 from app.models import Job, User
+from app.time_utils import format_ist, utc_to_ist
 
 router = APIRouter(tags=["jobs"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["ist"] = format_ist
 
 
 @router.get("/jobs", response_class=HTMLResponse)
@@ -60,8 +62,8 @@ async def job_status(job_id: str, request: Request, db: Session = Depends(get_db
         "confidence_score": job.confidence_score,
         "review_notes": job.review_notes,
         "error_message": job.error_message,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "created_at": utc_to_ist(job.created_at).isoformat() if job.created_at else None,
+        "completed_at": utc_to_ist(job.completed_at).isoformat() if job.completed_at else None,
     })
 
 
