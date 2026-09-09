@@ -2,8 +2,9 @@
 Samvaadhika - Job status and download routes
 """
 from pathlib import Path
+from math import ceil
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -20,18 +21,40 @@ templates.env.filters["ist"] = format_ist
 
 
 @router.get("/jobs", response_class=HTMLResponse)
-async def jobs_page(request: Request, db: Session = Depends(get_db)):
+async def jobs_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+):
     user = get_current_user(request, db)
+    page_size = 10
+    query = db.query(Job).filter(Job.owner_id == user.id)
+    total_jobs = query.count()
+    total_pages = max(1, ceil(total_jobs / page_size))
+    page = min(page, total_pages)
     jobs = (
-        db.query(Job)
-        .filter(Job.owner_id == user.id)
+        query
         .order_by(Job.created_at.desc())
-        .limit(50)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
+    first_page_link = max(1, page - 2)
+    last_page_link = min(total_pages, first_page_link + 4)
+    first_page_link = max(1, last_page_link - 4)
     return templates.TemplateResponse(
         "jobs.html",
-        {"request": request, "user": user, "jobs": jobs, "languages": SUPPORTED_LANGUAGES},
+        {
+            "request": request,
+            "user": user,
+            "jobs": jobs,
+            "languages": SUPPORTED_LANGUAGES,
+            "page": page,
+            "page_size": page_size,
+            "total_jobs": total_jobs,
+            "total_pages": total_pages,
+            "page_numbers": range(first_page_link, last_page_link + 1),
+        },
     )
 
 

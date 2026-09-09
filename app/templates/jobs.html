@@ -84,6 +84,26 @@
           </tbody>
         </table>
       </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.85rem 1rem;border-top:1px solid var(--green-border);flex-wrap:wrap;">
+        <span class="text-muted" style="font-size:0.8rem;">
+          Showing {{ ((page - 1) * page_size) + 1 }}–{{ [page * page_size, total_jobs] | min }} of {{ total_jobs }} jobs
+        </span>
+        {% if total_pages > 1 %}
+        <nav aria-label="Jobs pagination" style="display:flex;align-items:center;gap:0.35rem;">
+          {% if page > 1 %}
+          <a href="/jobs?page={{ page - 1 }}" class="btn btn-secondary btn-sm">Previous</a>
+          {% endif %}
+          {% for page_number in page_numbers %}
+          <a href="/jobs?page={{ page_number }}"
+             class="btn {% if page_number == page %}btn-primary{% else %}btn-secondary{% endif %} btn-sm"
+             {% if page_number == page %}aria-current="page"{% endif %}>{{ page_number }}</a>
+          {% endfor %}
+          {% if page < total_pages %}
+          <a href="/jobs?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next</a>
+          {% endif %}
+        </nav>
+        {% endif %}
+      </div>
       {% else %}
       <div style="padding:3rem;text-align:center;color:var(--text-muted);">
         No jobs yet. <a href="/dashboard">Start a translation →</a>
