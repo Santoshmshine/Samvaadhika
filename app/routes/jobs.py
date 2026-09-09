@@ -107,6 +107,7 @@ async def job_status(job_id: str, request: Request, db: Session = Depends(get_db
         "target_language": job.target_language,
         "target_language_name": SUPPORTED_LANGUAGES.get(job.target_language, job.target_language),
         "input_filename": job.input_filename,
+        "input_text": job.input_text if job.job_type == "text" else None,
         "output_text": job.output_text if job.status == "completed" else None,
         "has_output_file": bool(job.output_path and Path(job.output_path).exists()),
         "has_audio": bool(job.audio_output_path and Path(job.audio_output_path).exists()),

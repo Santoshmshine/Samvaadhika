@@ -182,17 +182,28 @@ function showJobModal(html) {
 }
 function closeJobModal() { document.getElementById('jobDetailsModal').style.display = 'none'; }
 
+function escapeJobDetail(value) {
+  const element = document.createElement('div');
+  element.textContent = value ?? '';
+  return element.innerHTML;
+}
+
 async function loadJobDetails(jobId) {
   const res = await fetch(`/jobs/${jobId}/status`);
   if (!res.ok) return showToastGlobal('Could not load job details');
   const data = await res.json();
   const parts = [];
   parts.push(`<div><strong>Job:</strong> ${data.id.slice(0,8)}…</div>`);
-  parts.push(`<div><strong>Input:</strong> ${data.input_filename || 'Text'}</div>`);
+  if (data.job_type === 'text') {
+    const inputText = data.input_text || 'Original text unavailable';
+    parts.push(`<div style="margin-top:0.5rem;"><strong>Input:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeJobDetail(inputText)}</div></div>`);
+  } else {
+    parts.push(`<div><strong>Input:</strong> ${escapeJobDetail(data.input_filename || 'File')}</div>`);
+  }
   parts.push(`<div><strong>Type:</strong> ${data.job_type}</div>`);
   parts.push(`<div><strong>Lang:</strong> ${data.source_language || 'Auto'} → ${data.target_language_name || data.target_language}</div>`);
   parts.push(`<div><strong>Status:</strong> ${data.status}</div>`);
-  if (data.output_text) parts.push(`<div style="margin-top:0.5rem;"><strong>Preview:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;">${data.output_text}</div></div>`);
+  if (data.output_text) parts.push(`<div style="margin-top:0.5rem;"><strong>Preview:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeJobDetail(data.output_text)}</div></div>`);
   showJobModal(parts.join(''));
 
   // Buttons
