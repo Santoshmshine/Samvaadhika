@@ -156,6 +156,15 @@
                 <div class="job-progress-fill" style="width:{{ job.progress }}%"></div>
               </div>
               {% endif %}
+              <div class="job-timing text-muted" style="font-size:0.72rem;margin-top:4px;">
+                {% if job.status == 'completed' and job.started_at and job.completed_at %}
+                Completed in {{ duration_between(job.started_at, job.completed_at) }}
+                {% elif job.status == 'processing' and job.started_at %}
+                Elapsed {{ duration_between(job.started_at, none) }} · Estimating…
+                {% elif job.status == 'queued' %}
+                Waiting to start
+                {% endif %}
+              </div>
             </div>
             <div class="job-action">
               {% if job.status == 'completed' %}
@@ -429,6 +438,16 @@ function pollJob(jobId) {
   }, 2500);
 }
 
+function jobTimingText(data) {
+  if (data.status === 'completed') return `Completed in ${data.elapsed_display}`;
+  if (data.status === 'processing') {
+    const eta = data.eta_display ? ` · Approx. ${data.eta_display} remaining` : ' · Estimating…';
+    return `Elapsed ${data.elapsed_display}${eta}`;
+  }
+  if (data.status === 'queued') return 'Waiting to start';
+  return '';
+}
+
 function updateJobRow(data) {
   const row = document.getElementById('job-' + data.id);
   if (!row) return;
@@ -436,6 +455,14 @@ function updateJobRow(data) {
   const icon = row.querySelector('.job-status-icon');
   icon.className = 'job-status-icon ' + data.status;
   icon.textContent = data.status === 'completed' ? '✓' : data.status === 'failed' ? '✕' : '⟳';
+  let timing = row.querySelector('.job-timing');
+  if (!timing) {
+    timing = document.createElement('div');
+    timing.className = 'job-timing text-muted';
+    timing.style.cssText = 'font-size:0.72rem;margin-top:4px;';
+    row.querySelector('.job-meta').appendChild(timing);
+  }
+  timing.textContent = jobTimingText(data);
 
   const action = row.querySelector('.job-action');
   if (data.status === 'completed') {
@@ -481,6 +508,7 @@ function addJobToList(jobId, filename, targetLang, status) {
     <div class="job-meta">
       <div class="job-filename">${filename}</div>
       <div class="job-langs">→ ${targetLang}</div>
+      <div class="job-timing text-muted" style="font-size:0.72rem;margin-top:4px;">${status === 'completed' ? '' : 'Waiting to start'}</div>
     </div>
     <div class="job-action">
       <span class="badge badge-${status}">${status.charAt(0).toUpperCase()+status.slice(1)}</span>

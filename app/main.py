@@ -17,7 +17,7 @@ from app.config import (
     STATIC_DIR, TEMPLATES_DIR, SUPPORTED_LANGUAGES,
 )
 from app.database import init_db
-from app.time_utils import format_ist
+from app.time_utils import format_duration_between, format_ist
 from app.worker import start_worker, stop_worker
 
 # ---------------------------------------------------------------------------
@@ -63,6 +63,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Templates
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.filters["ist"] = format_ist
+templates.env.globals["duration_between"] = format_duration_between
 
 # ---------------------------------------------------------------------------
 # Include routers

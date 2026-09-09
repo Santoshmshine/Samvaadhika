@@ -136,6 +136,7 @@ _parler_runtime = None
 _parler_lock = threading.Lock()
 
 TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
+ASR_MIN_AVG_LOGPROB = -1.5
 
 
 def _get_whisper():
@@ -730,8 +731,10 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
         segments_iter, info = model.transcribe(
             str(audio_path),
             language=language,
+            task="transcribe",
             beam_size=5,
             vad_filter=True,
+            condition_on_previous_text=False,
         )
         segments = []
         for s in segments_iter:
@@ -750,6 +753,14 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 hex_replace = ""
             avg_logprob = getattr(s, "avg_logprob", None)
             no_speech_prob = getattr(s, "no_speech_prob", None)
+            if avg_logprob is not None and avg_logprob < ASR_MIN_AVG_LOGPROB:
+                logger.warning(
+                    "Skipping unreliable ASR segment %.2f-%.2f (avg_logprob=%.2f)",
+                    s.start,
+                    s.end,
+                    avg_logprob,
+                )
+                continue
             segments.append({
                 "start": s.start,
                 "end": s.end,
@@ -778,8 +789,10 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 segments_iter, info = model.transcribe(
                     str(audio_path),
                     language=language,
+                    task="transcribe",
                     beam_size=5,
                     vad_filter=False,
+                    condition_on_previous_text=False,
                 )
                 segments = []
                 for s in segments_iter:
@@ -798,6 +811,14 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                         hex_replace = ""
                     avg_logprob = getattr(s, "avg_logprob", None)
                     no_speech_prob = getattr(s, "no_speech_prob", None)
+                    if avg_logprob is not None and avg_logprob < ASR_MIN_AVG_LOGPROB:
+                        logger.warning(
+                            "Skipping unreliable ASR segment %.2f-%.2f (avg_logprob=%.2f)",
+                            s.start,
+                            s.end,
+                            avg_logprob,
+                        )
+                        continue
                     segments.append({
                         "start": s.start,
                         "end": s.end,
@@ -826,6 +847,11 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 logger.info("ASR: no segments produced.")
         except Exception:
             pass
+        logger.info(
+            "ASR language requested=%s detected=%s",
+            language or "auto",
+            info.language,
+        )
         return segments, info.language
     except Exception as e:
         logger.error(f"ASR transcription failed: {e}")
@@ -1224,6 +1250,11 @@ def probe_media_duration(media_path: Path) -> float:
     return float(result.stdout.decode().strip())
 
 
+def _ffmpeg_filter_path(path: Path) -> str:
+    """Escape a local path for use inside an FFmpeg filter expression."""
+    return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+
+
 def mux_translated_video(
     video_path: Path,
     audio_path: Path,
@@ -1231,19 +1262,27 @@ def mux_translated_video(
     output_path: Path,
     subtitle_language: str,
 ) -> bool:
-    """Mux original video, synchronized translated audio, and soft subtitles into MP4."""
+    """Create an attributed MP4 with translated audio and default soft subtitles."""
+    font_path = BASE_DIR / "fonts" / "Mangal 400.ttf"
+    if not font_path.exists():
+        raise RuntimeError(f"Video attribution font is missing: {font_path}")
+    attribution_filter = (
+        f"drawtext=fontfile='{_ffmpeg_filter_path(font_path)}':"
+        "text='Translated using Samvaadhika':"
+        "x=w-tw-16:y=16:fontsize=18:fontcolor=white:"
+        "box=1:boxcolor=black@0.6:boxborderw=7"
+    )
     cmd = [
         "ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path),
         "-i", str(subtitle_path), "-map", "0:v:0", "-map", "1:a:0", "-map", "2:0",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
+        "-vf", attribution_filter,
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
+        "-disposition:s:0", "default",
         "-metadata:s:s:0", f"language={subtitle_language}", "-movflags", "+faststart",
         str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=1800)
-    if result.returncode != 0:
-        cmd[cmd.index("copy")] = "libx264"
-        cmd[cmd.index("-c:a"):cmd.index("-c:a")] = ["-preset", "medium", "-crf", "20"]
-        result = subprocess.run(cmd, capture_output=True, timeout=1800)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg video mux failed: {result.stderr.decode(errors='replace')}")
     return True

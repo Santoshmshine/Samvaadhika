@@ -53,6 +53,15 @@
                   <div class="job-progress-fill" id="prog-{{ job.id }}" style="width:{{ job.progress }}%"></div>
                 </div>
                 {% endif %}
+                <div id="timing-{{ job.id }}" class="text-muted" style="font-size:0.72rem;margin-top:4px;white-space:nowrap;">
+                  {% if job.status == 'completed' and job.started_at and job.completed_at %}
+                  Completed in {{ duration_between(job.started_at, job.completed_at) }}
+                  {% elif job.status == 'processing' and job.started_at %}
+                  Elapsed {{ duration_between(job.started_at, none) }} · Estimating…
+                  {% elif job.status == 'queued' %}
+                  Waiting to start
+                  {% endif %}
+                </div>
               </td>
               <td style="font-size:0.8rem;color:var(--text-muted);">
                 {{ job.created_at | ist('%d %b %Y %H:%M IST') }}
@@ -129,12 +138,24 @@ document.querySelectorAll('[data-status="processing"],[data-status="queued"]').f
     }
     const prog = document.getElementById('prog-' + jobId);
     if (prog) prog.style.width = data.progress + '%';
+    const timing = document.getElementById('timing-' + jobId);
+    if (timing) timing.textContent = jobTimingText(data);
     if (data.status === 'completed' || data.status === 'failed') {
       clearInterval(interval);
       setTimeout(() => location.reload(), 1000);
     }
   }, 3000);
 });
+
+function jobTimingText(data) {
+  if (data.status === 'completed') return `Completed in ${data.elapsed_display}`;
+  if (data.status === 'processing') {
+    const eta = data.eta_display ? ` · Approx. ${data.eta_display} remaining` : ' · Estimating…';
+    return `Elapsed ${data.elapsed_display}${eta}`;
+  }
+  if (data.status === 'queued') return 'Waiting to start';
+  return '';
+}
 </script>
 <!-- Job details modal -->
 <div id="jobDetailsModal" class="modal" style="display:none;">

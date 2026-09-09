@@ -13,11 +13,19 @@ from app.auth import get_current_user
 from app.config import SUPPORTED_LANGUAGES, TEMPLATES_DIR
 from app.database import get_db
 from app.models import Job, User
-from app.time_utils import format_ist, utc_to_ist
+from app.time_utils import (
+    elapsed_seconds,
+    estimate_remaining_seconds,
+    format_duration,
+    format_duration_between,
+    format_ist,
+    utc_to_ist,
+)
 
 router = APIRouter(tags=["jobs"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.filters["ist"] = format_ist
+templates.env.globals["duration_between"] = format_duration_between
 
 
 @router.get("/jobs", response_class=HTMLResponse)
@@ -54,6 +62,7 @@ async def jobs_page(
             "total_jobs": total_jobs,
             "total_pages": total_pages,
             "page_numbers": range(first_page_link, last_page_link + 1),
+            "duration_between": format_duration_between,
         },
     )
 
@@ -66,6 +75,28 @@ async def job_status(job_id: str, request: Request, db: Session = Depends(get_db
         raise HTTPException(404, "Job not found")
     if job.owner_id != user.id and user.role != "admin":
         raise HTTPException(403, "Access denied")
+
+    elapsed = elapsed_seconds(job.started_at, job.completed_at)
+    historical_durations = []
+    if job.status == "processing":
+        completed_jobs = (
+            db.query(Job)
+            .filter(
+                Job.job_type == job.job_type,
+                Job.status == "completed",
+                Job.started_at.isnot(None),
+                Job.completed_at.isnot(None),
+                Job.id != job.id,
+            )
+            .order_by(Job.completed_at.desc())
+            .limit(10)
+            .all()
+        )
+        historical_durations = [
+            elapsed_seconds(completed.started_at, completed.completed_at)
+            for completed in completed_jobs
+        ]
+    eta_seconds = estimate_remaining_seconds(elapsed, job.progress, historical_durations)
 
     return JSONResponse({
         "id": job.id,
@@ -87,6 +118,10 @@ async def job_status(job_id: str, request: Request, db: Session = Depends(get_db
         "error_message": job.error_message,
         "created_at": utc_to_ist(job.created_at).isoformat() if job.created_at else None,
         "completed_at": utc_to_ist(job.completed_at).isoformat() if job.completed_at else None,
+        "elapsed_seconds": elapsed,
+        "elapsed_display": format_duration(elapsed),
+        "eta_seconds": eta_seconds,
+        "eta_display": format_duration(eta_seconds) if eta_seconds is not None else None,
     })
 
 
