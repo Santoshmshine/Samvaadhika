@@ -1,5 +1,5 @@
 """
-Samvaadhika - Job status and download routes
+Samvaadhika - Job status and download routes.
 """
 from pathlib import Path
 from math import ceil

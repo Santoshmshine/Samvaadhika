@@ -135,7 +135,7 @@ _translation_model_lock = threading.Lock()
 _parler_runtime = None
 _parler_lock = threading.Lock()
 
-TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
+TRANSLATION_PIPELINE_VERSION = "indictrans2-v3"
 ASR_MIN_AVG_LOGPROB = -1.5
 
 
@@ -525,7 +525,13 @@ def translation_cache_hash(text: str, source_lang: str, target_lang: str) -> str
     )
 
 
-_PROTECTED_TEXT_PATTERN = re.compile(r"(https?://[^\s]+|www\.[^\s]+|\r\n|\r|\n)")
+_PROTECTED_TEXT_PATTERN = re.compile(
+    r"(https?://[^\s]+|www\.[^\s]+|"
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+|"
+    r"\r\n|\r|\n)"
+)
 
 _CURATED_IDIOM_TRANSLATIONS = {
     ("en", "mr", "it is raining cats and dogs outside"): "बाहेर मुसळधार पाऊस पडत आहे।",
@@ -549,7 +555,7 @@ def _prepare_translation_part(text: str, source_lang: str) -> str:
 
 
 def _translate_preserving_protected_text(text: str, translate_part) -> str:
-    """Translate prose while preserving URLs and original line separators."""
+    """Translate prose while preserving URLs, emails, and line separators."""
     parts = _PROTECTED_TEXT_PATTERN.split(text)
     translated_parts = []
     for part in parts:

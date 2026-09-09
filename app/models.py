@@ -26,6 +26,8 @@ class User(Base):
     role = Column(Enum("admin", "user", name="user_role"), default="user", nullable=False)
     is_active = Column(Boolean, default=True)
     is_approved = Column(Boolean, default=False)  # Admin must approve new accounts
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
 

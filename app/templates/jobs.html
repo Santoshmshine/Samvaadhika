@@ -8,7 +8,7 @@
       <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">📋 My Translations</div>
       <div class="text-muted" style="font-size:0.85rem;">All your translation jobs — click a row to see details</div>
     </div>
-    <a href="/dashboard" class="btn btn-primary">+ New Translation</a>
+    <a href="/dashboard" class="btn btn-secondary btn-sm">← Back to dashboard</a>
   </div>
 
   <div class="panel">
@@ -28,7 +28,7 @@
           </thead>
           <tbody>
             {% for job in jobs %}
-            <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}">
+            <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}" aria-selected="false">
               <td>
                 <div style="font-weight:600;font-size:0.88rem;">
                   {{ job.input_filename or 'Text translation' }}
@@ -100,6 +100,7 @@
         {% if total_pages > 1 %}
         <nav aria-label="Jobs pagination" style="display:flex;align-items:center;gap:0.35rem;">
           {% if page > 1 %}
+          <a href="/jobs?page=1" class="btn btn-secondary btn-sm">First</a>
           <a href="/jobs?page={{ page - 1 }}" class="btn btn-secondary btn-sm">Previous</a>
           {% endif %}
           {% for page_number in page_numbers %}
@@ -109,6 +110,7 @@
           {% endfor %}
           {% if page < total_pages %}
           <a href="/jobs?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next</a>
+          <a href="/jobs?page={{ total_pages }}" class="btn btn-secondary btn-sm">Last</a>
           {% endif %}
         </nav>
         {% endif %}
@@ -180,7 +182,21 @@ function showJobModal(html) {
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('jobDetailsModal').style.display = 'block';
 }
-function closeJobModal() { document.getElementById('jobDetailsModal').style.display = 'none'; }
+function closeJobModal() {
+  document.getElementById('jobDetailsModal').style.display = 'none';
+  document.querySelectorAll('tr[data-job-id]').forEach(row => {
+    row.classList.remove('job-row-selected');
+    row.setAttribute('aria-selected', 'false');
+  });
+}
+
+function selectJobRow(jobId) {
+  document.querySelectorAll('tr[data-job-id]').forEach(row => {
+    const selected = row.dataset.jobId === jobId;
+    row.classList.toggle('job-row-selected', selected);
+    row.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+}
 
 function escapeJobDetail(value) {
   const element = document.createElement('div');
@@ -192,6 +208,7 @@ async function loadJobDetails(jobId) {
   const res = await fetch(`/jobs/${jobId}/status`);
   if (!res.ok) return showToastGlobal('Could not load job details');
   const data = await res.json();
+  selectJobRow(jobId);
   const parts = [];
   parts.push(`<div><strong>Job:</strong> ${data.id.slice(0,8)}…</div>`);
   if (data.job_type === 'text') {
@@ -247,5 +264,15 @@ document.querySelectorAll('tr[data-job-id]').forEach(row => {
     loadJobDetails(id);
   });
 });
+
+const requestedJobId = new URLSearchParams(location.search).get('job_id');
+if (requestedJobId) {
+  const requestedRow = Array.from(document.querySelectorAll('tr[data-job-id]'))
+    .find(row => row.dataset.jobId === requestedJobId);
+  if (requestedRow) {
+    requestedRow.scrollIntoView({ block: 'center' });
+    loadJobDetails(requestedJobId);
+  }
+}
 </script>
 {% endblock %}
