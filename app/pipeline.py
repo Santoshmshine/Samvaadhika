@@ -1263,28 +1263,64 @@ def mux_translated_video(
     subtitle_language: str,
 ) -> bool:
     """Create an attributed MP4 with translated audio and default soft subtitles."""
-    font_path = BASE_DIR / "fonts" / "Mangal 400.ttf"
+    font_path = BASE_DIR / "fonts" / "NotoSansDevanagari-VariableFont_wdth,wght.ttf"
     if not font_path.exists():
         raise RuntimeError(f"Video attribution font is missing: {font_path}")
+    try:
+        has_subtitles = bool(subtitle_path.read_text(encoding="utf-8-sig").strip())
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read translated subtitles: {subtitle_path}") from exc
+    source_duration = probe_media_duration(video_path)
+    subtitle_language_tag = {
+        "en": "eng",
+        "hi": "hin",
+        "mr": "mar",
+    }.get(subtitle_language, subtitle_language)
     attribution_filter = (
+        "pad=ceil(iw/2)*2:ceil(ih/2)*2,"
         f"drawtext=fontfile='{_ffmpeg_filter_path(font_path)}':"
         "text='Translated using Samvaadhika':"
-        "x=w-tw-16:y=16:fontsize=18:fontcolor=white:"
-        "box=1:boxcolor=black@0.6:boxborderw=7"
+        "x='max(4,w-tw-7)':y=4:fontsize='min(18,w/18)':fontcolor=white:"
+        "box=1:boxcolor=black@0.6:boxborderw=3"
     )
     cmd = [
         "ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path),
-        "-i", str(subtitle_path), "-map", "0:v:0", "-map", "1:a:0", "-map", "2:0",
+    ]
+    if has_subtitles:
+        cmd.extend(["-i", str(subtitle_path)])
+    cmd.extend([
+        "-map", "0:v:0", "-map", "1:a:0",
         "-vf", attribution_filter,
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-        "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
-        "-disposition:s:0", "default",
-        "-metadata:s:s:0", f"language={subtitle_language}", "-movflags", "+faststart",
-        str(output_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, timeout=1800)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg video mux failed: {result.stderr.decode(errors='replace')}")
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+    ])
+    if has_subtitles:
+        cmd.extend([
+            "-map", "2:0", "-c:s", "mov_text", "-disposition:s:0", "default",
+            "-metadata:s:s:0", f"language={subtitle_language_tag}",
+        ])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{output_path.stem}-",
+        suffix=output_path.suffix,
+        dir=output_path.parent,
+        delete=False,
+    ) as temporary_file:
+        temporary_output_path = Path(temporary_file.name)
+    cmd.extend([
+        "-t", f"{source_duration:.3f}", "-movflags", "+faststart",
+        str(temporary_output_path),
+    ])
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg video mux failed: {result.stderr.decode(errors='replace')}"
+            )
+        os.replace(temporary_output_path, output_path)
+    finally:
+        temporary_output_path.unlink(missing_ok=True)
     return True
 
 # ---------------------------------------------------------------------------
