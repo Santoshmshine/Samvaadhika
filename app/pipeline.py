@@ -10,6 +10,7 @@ are downloaded — each stub logs a clear message and returns a placeholder resu
 """
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -135,8 +136,9 @@ _translation_model_lock = threading.Lock()
 _parler_runtime = None
 _parler_lock = threading.Lock()
 
-TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
+TRANSLATION_PIPELINE_VERSION = "indictrans2-v3"
 ASR_MIN_AVG_LOGPROB = -1.5
+MEDIA_REVIEW_CONFIDENCE = 0.8
 
 
 def _get_whisper():
@@ -377,7 +379,32 @@ def fix_mojibake(text: str) -> str:
             return text
 
 
-def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = None) -> (str, str):
+_MARATHI_ASR_NORMALIZATIONS = (
+    ("मस्ता है", "मस्त आहे"),
+    ("मस्टा हे", "मस्त आहे"),
+    ("मस्ता हे", "मस्त आहे"),
+    ("निगा लोए", "निघालोय"),
+    ("गरिच चाल लोए", "घरीच चाललोय"),
+    ("गरीच चाल लोए", "घरीच चाललोय"),
+    ("कुते", "कुठे"),
+    ("तु", "तू"),
+    ("पन", "पण"),
+)
+
+
+def normalize_marathi_asr_text(text: str) -> str:
+    """Repair conservative, recurring Marathi Whisper spelling variants."""
+    normalized = text
+    for source, replacement in _MARATHI_ASR_NORMALIZATIONS:
+        pattern = rf"(?<![\u0900-\u097F]){re.escape(source)}(?![\u0900-\u097F])"
+        normalized = re.sub(pattern, replacement, normalized)
+    return normalized
+
+
+def detect_and_fix_transliterated_segment(
+    text: str,
+    asr_hint: Optional[str] = None,
+) -> Tuple[str, str]:
     """Detect if `text` is a Latin-script transliteration of Hindi/Marathi.
     If so, attempt to transliterate to Devanagari and return (fixed_text, lang).
     Otherwise return (original_text, detected_lang).
@@ -654,11 +681,11 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=256,
             )
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs, max_length=512, num_beams=5, use_cache=False
+                    **inputs, max_length=256, num_beams=5, use_cache=False
                 )
 
             tokenizer._switch_to_target_mode()
@@ -716,6 +743,27 @@ def apply_glossary(text: str, source_lang: str, target_lang: str, db) -> str:
 # ASR — Speech to Text
 # ---------------------------------------------------------------------------
 
+def media_translation_confidence(segments: list, mt_confidences: list[float]) -> float:
+    """Combine actual ASR token likelihood with MT direction confidence."""
+    asr_scores = [
+        math.exp(min(0.0, float(segment["asr_avg_logprob"])))
+        for segment in segments
+        if segment.get("asr_avg_logprob") is not None
+    ]
+    asr_confidence = sum(asr_scores) / len(asr_scores) if asr_scores else 0.0
+    mt_confidence = min(mt_confidences) if mt_confidences else 0.0
+    return round(min(asr_confidence, mt_confidence), 4)
+
+
+def _asr_transcribe_options(language: Optional[str], vad_filter: bool) -> dict:
+    return {
+        "language": language,
+        "task": "transcribe",
+        "beam_size": 5,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": False,
+    }
+
 def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[list, str]:
     """
     Transcribe audio file. Returns (segments, detected_language).
@@ -730,11 +778,7 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
         # First attempt with VAD enabled (faster, skips silence)
         segments_iter, info = model.transcribe(
             str(audio_path),
-            language=language,
-            task="transcribe",
-            beam_size=5,
-            vad_filter=True,
-            condition_on_previous_text=False,
+            **_asr_transcribe_options(language, vad_filter=True),
         )
         segments = []
         for s in segments_iter:
@@ -788,11 +832,7 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 logger.info(f"ASR VAD produced only {total_speech:.1f}s speech from {duration:.1f}s audio; retrying without VAD.")
                 segments_iter, info = model.transcribe(
                     str(audio_path),
-                    language=language,
-                    task="transcribe",
-                    beam_size=5,
-                    vad_filter=False,
-                    condition_on_previous_text=False,
+                    **_asr_transcribe_options(language, vad_filter=False),
                 )
                 segments = []
                 for s in segments_iter:
