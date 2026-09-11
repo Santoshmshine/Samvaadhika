@@ -39,6 +39,7 @@
               <th>Role</th>
               <th>Status</th>
               <th>Registered</th>
+              <th>Last active</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -67,8 +68,17 @@
               <td style="font-size:0.78rem;color:var(--text-muted);">
                 {{ u.created_at.strftime('%d %b %Y') if u.created_at else '—' }}
               </td>
+              <td style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">
+                {{ u.last_login | ist('%d %b %Y %H:%M IST') if u.last_login else 'Never' }}
+              </td>
               <td>
                 <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                  {% if u.id != user.id %}
+                  <button class="btn btn-secondary btn-sm reset-password-btn"
+                          data-user-id="{{ u.id }}" data-username="{{ u.username }}">
+                    Reset password
+                  </button>
+                  {% endif %}
                   {% if not u.is_approved %}
                   <button class="btn btn-primary btn-sm" onclick="approveUser('{{ u.id }}', '{{ u.username }}')">
                     ✓ Approve
@@ -77,6 +87,16 @@
                   {% if u.is_active and u.id != user.id %}
                   <button class="btn btn-danger btn-sm" onclick="deactivateUser('{{ u.id }}', '{{ u.username }}')">
                     Deactivate
+                  </button>
+                  {% elif u.is_approved and not u.is_active %}
+                  <button class="btn btn-primary btn-sm" onclick="activateUser('{{ u.id }}', '{{ u.username }}')">
+                    Activate
+                  </button>
+                  {% endif %}
+                  {% if u.id != user.id %}
+                  <button class="btn btn-danger btn-sm delete-user-btn"
+                          data-user-id="{{ u.id }}" data-username="{{ u.username }}">
+                    Delete
                   </button>
                   {% endif %}
                 </div>
@@ -88,11 +108,91 @@
       </div>
     </div>
   </div>
+
+  <div class="panel" style="margin-top:1rem;">
+    <div class="panel-header">DELETED USERS</div>
+    <div class="panel-body" style="padding:0;">
+      {% if deleted_users %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name / Username</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Registered</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in deleted_users %}
+            <tr>
+              <td>
+                <div style="font-weight:600;font-size:0.88rem;">{{ u.full_name or u.username }}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);">@{{ u.username }}</div>
+              </td>
+              <td style="font-size:0.82rem;">{{ u.email }}</td>
+              <td><span class="badge badge-queued">{{ u.role }}</span></td>
+              <td style="font-size:0.78rem;color:var(--text-muted);">
+                {{ u.created_at.strftime('%d %b %Y') if u.created_at else '—' }}
+              </td>
+              <td>
+                <button class="btn btn-primary btn-sm reinstate-user-btn"
+                        data-user-id="{{ u.id }}" data-username="{{ u.username }}">
+                  Reinstate
+                </button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="text-muted" style="padding:1rem;font-size:0.85rem;">No deleted users.</div>
+      {% endif %}
+    </div>
+  </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
+<dialog id="resetPasswordDialog" class="app-dialog" style="width:min(420px,calc(100% - 2rem));border:1px solid var(--green-border);border-radius:6px;padding:0;box-shadow:0 12px 36px rgba(0,0,0,0.24);">
+  <form id="resetPasswordForm" style="padding:1rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+      <h3 style="margin:0;">Reset password</h3>
+      <button type="button" class="btn btn-secondary btn-sm" id="closeResetPassword" aria-label="Close password reset">✕</button>
+    </div>
+    <p id="resetPasswordUser" class="text-muted" style="font-size:0.85rem;margin:0.5rem 0 1rem;"></p>
+    <label class="form-label" for="newPassword">New password</label>
+    <input id="newPassword" name="new_password" type="password" minlength="8" autocomplete="new-password" required style="width:100%;margin-bottom:0.75rem;" />
+    <label class="form-label" for="confirmPassword">Confirm new password</label>
+    <input id="confirmPassword" type="password" minlength="8" autocomplete="new-password" required style="width:100%;" />
+    <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1rem;">
+      <button type="button" class="btn btn-secondary" id="cancelResetPassword">Cancel</button>
+      <button type="submit" class="btn btn-primary">Reset password</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="reinstateUserDialog" class="app-dialog" style="width:min(460px,calc(100% - 2rem));border:1px solid var(--green-border);border-radius:6px;padding:0;box-shadow:0 12px 36px rgba(0,0,0,0.24);">
+  <div style="padding:1rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+      <h3 style="margin:0;">Reinstate deleted user?</h3>
+      <button type="button" class="btn btn-secondary btn-sm" id="closeReinstateUser" aria-label="Close reinstatement warning">✕</button>
+    </div>
+    <p id="reinstateUserWarning" style="margin:0.75rem 0 0.5rem;"></p>
+    <p class="text-muted" style="font-size:0.85rem;margin:0;">This will restore the account, allow the user to sign in again, and reconnect access to their retained translation jobs and activity history.</p>
+    <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1rem;">
+      <button type="button" class="btn btn-secondary" id="cancelReinstateUser">Cancel</button>
+      <button type="button" class="btn btn-primary" id="confirmReinstateUser">Reinstate user</button>
+    </div>
+  </div>
+</dialog>
+
 <script>
+let resetPasswordUserId = null;
+let reinstateUserId = null;
+
 document.getElementById('createUserForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const res = await fetch('/admin/users/create', { method: 'POST', body: new FormData(event.target) });
@@ -116,6 +216,97 @@ async function deactivateUser(id, username) {
   showAlert(data.message, res.ok ? 'success' : 'error');
   if (res.ok) setTimeout(() => location.reload(), 1200);
 }
+
+async function activateUser(id, username) {
+  if (!confirm(`Activate user "${username}"?`)) return;
+  const res = await fetch(`/admin/users/${id}/activate`, { method: 'POST' });
+  const data = await res.json();
+  showAlert(data.message || data.detail, res.ok ? 'success' : 'error');
+  if (res.ok) setTimeout(() => location.reload(), 1200);
+}
+
+function closeResetPasswordDialog() {
+  document.getElementById('resetPasswordDialog').close();
+  document.getElementById('resetPasswordForm').reset();
+  resetPasswordUserId = null;
+}
+
+document.querySelectorAll('.reset-password-btn').forEach(button => {
+  button.addEventListener('click', () => {
+    resetPasswordUserId = button.dataset.userId;
+    document.getElementById('resetPasswordUser').textContent = `Set a new password for @${button.dataset.username}.`;
+    document.getElementById('resetPasswordDialog').showModal();
+    document.getElementById('newPassword').focus();
+  });
+});
+
+document.querySelectorAll('.delete-user-btn').forEach(button => {
+  button.addEventListener('click', async () => {
+    const username = button.dataset.username;
+    const confirmed = confirm(
+      `Delete user "${username}"? They will lose access and disappear from User Management. Their translation jobs and activity history will be retained.`
+    );
+    if (!confirmed) return;
+
+    const res = await fetch(`/admin/users/${button.dataset.userId}`, { method: 'DELETE' });
+    const data = await res.json();
+    showAlert(data.message || data.detail || 'Unable to delete user.', res.ok ? 'success' : 'error');
+    if (res.ok) setTimeout(() => location.reload(), 900);
+  });
+});
+
+function closeReinstateUserDialog() {
+  document.getElementById('reinstateUserDialog').close();
+  reinstateUserId = null;
+}
+
+document.querySelectorAll('.reinstate-user-btn').forEach(button => {
+  button.addEventListener('click', () => {
+    reinstateUserId = button.dataset.userId;
+    document.getElementById('reinstateUserWarning').textContent =
+      `You are about to reinstate @${button.dataset.username}.`;
+    document.getElementById('reinstateUserDialog').showModal();
+  });
+});
+
+document.getElementById('closeReinstateUser').addEventListener('click', closeReinstateUserDialog);
+document.getElementById('cancelReinstateUser').addEventListener('click', closeReinstateUserDialog);
+document.getElementById('confirmReinstateUser').addEventListener('click', async () => {
+  const res = await fetch(`/admin/users/${reinstateUserId}/reinstate`, { method: 'POST' });
+  const data = await res.json();
+  showAlert(data.message || data.detail || 'Unable to reinstate user.', res.ok ? 'success' : 'error');
+  if (res.ok) {
+    closeReinstateUserDialog();
+    setTimeout(() => location.reload(), 900);
+  }
+});
+
+document.getElementById('closeResetPassword').addEventListener('click', closeResetPasswordDialog);
+document.getElementById('cancelResetPassword').addEventListener('click', closeResetPasswordDialog);
+document.getElementById('newPassword').addEventListener('input', () => {
+  document.getElementById('confirmPassword').setCustomValidity('');
+});
+document.getElementById('confirmPassword').addEventListener('input', event => {
+  event.target.setCustomValidity('');
+});
+
+document.getElementById('resetPasswordForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const password = document.getElementById('newPassword');
+  const confirmation = document.getElementById('confirmPassword');
+  confirmation.setCustomValidity(password.value === confirmation.value ? '' : 'Passwords do not match');
+  if (!event.target.reportValidity()) return;
+
+  const formData = new FormData();
+  formData.append('new_password', password.value);
+  const res = await fetch(`/admin/users/${resetPasswordUserId}/reset-password`, {
+    method: 'POST',
+    body: formData,
+  });
+  const data = await res.json();
+  showAlert(data.message || data.detail || 'Unable to reset password.', res.ok ? 'success' : 'error');
+  if (res.ok) closeResetPasswordDialog();
+});
 
 function showAlert(msg, type) {
   document.getElementById('alertBox').innerHTML =

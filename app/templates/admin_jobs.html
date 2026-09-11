@@ -6,7 +6,7 @@
   <div class="flex-between mb-2">
     <div>
       <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">📋 All Translation Jobs</div>
-      <div class="text-muted" style="font-size:0.85rem;">System-wide job queue — requeue failed jobs here</div>
+      <div class="text-muted" style="font-size:0.85rem;">System-wide job queue — click a row for details or requeue failed jobs</div>
     </div>
     <a href="/admin/" class="btn btn-secondary btn-sm">← Admin home</a>
   </div>
@@ -31,7 +31,7 @@
           </thead>
           <tbody>
             {% for job in jobs %}
-            <tr>
+            <tr data-job-id="{{ job.id }}" aria-selected="false">
               <td style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;">
                 {{ job.id[:8] }}…
               </td>
@@ -69,12 +69,52 @@
           </tbody>
         </table>
       </div>
+      {% if jobs %}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.85rem 1rem;border-top:1px solid var(--green-border);flex-wrap:wrap;">
+        <span class="text-muted" style="font-size:0.8rem;">
+          Showing {{ ((page - 1) * page_size) + 1 }}–{{ [page * page_size, total_jobs] | min }} of {{ total_jobs }} jobs
+        </span>
+        {% if total_pages > 1 %}
+        <nav aria-label="Admin jobs pagination" style="display:flex;align-items:center;gap:0.35rem;">
+          {% if page > 1 %}
+          <a href="/admin/jobs?page=1" class="btn btn-secondary btn-sm">First</a>
+          <a href="/admin/jobs?page={{ page - 1 }}" class="btn btn-secondary btn-sm">Previous</a>
+          {% endif %}
+          {% for page_number in page_numbers %}
+          <a href="/admin/jobs?page={{ page_number }}"
+             class="btn {% if page_number == page %}btn-primary{% else %}btn-secondary{% endif %} btn-sm"
+             {% if page_number == page %}aria-current="page"{% endif %}>{{ page_number }}</a>
+          {% endfor %}
+          {% if page < total_pages %}
+          <a href="/admin/jobs?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next</a>
+          <a href="/admin/jobs?page={{ total_pages }}" class="btn btn-secondary btn-sm">Last</a>
+          {% endif %}
+        </nav>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
+<div id="jobDetailsModal" class="modal" style="display:none;">
+  <div class="modal-content" style="max-width:640px;padding:1rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h3>Job details</h3>
+      <button onclick="closeJobModal()" class="btn btn-secondary btn-sm" aria-label="Close job details">✕</button>
+    </div>
+    <div id="modalBody" style="margin-top:0.5rem;line-height:1.4rem;color:var(--text-muted);"></div>
+    <div style="margin-top:1rem;display:flex;gap:0.5rem;justify-content:flex-end;flex-wrap:wrap;">
+      <a id="downloadFileBtn" class="btn btn-primary btn-sm" style="display:none;">Download file</a>
+      <a id="downloadAudioBtn" class="btn btn-secondary btn-sm" style="display:none;">Download audio</a>
+      <a id="downloadSubsBtn" class="btn btn-secondary btn-sm" style="display:none;">Download SRT</a>
+      <a id="downloadVideoBtn" class="btn btn-primary btn-sm" style="display:none;">Download video</a>
+    </div>
+  </div>
+</div>
+
 <script>
 async function requeueJob(id) {
   const res = await fetch(`/admin/jobs/${id}/requeue`, { method: 'POST' });
@@ -83,5 +123,67 @@ async function requeueJob(id) {
     `<div class="alert alert-${res.ok ? 'success' : 'error'}">${data.message || data.detail}</div>`;
   if (res.ok) setTimeout(() => location.reload(), 1200);
 }
+
+function escapeJobDetail(value) {
+  const element = document.createElement('div');
+  element.textContent = value ?? '';
+  return element.innerHTML;
+}
+
+function closeJobModal() {
+  document.getElementById('jobDetailsModal').style.display = 'none';
+  document.querySelectorAll('tr[data-job-id]').forEach(row => {
+    row.classList.remove('job-row-selected');
+    row.setAttribute('aria-selected', 'false');
+  });
+}
+
+function selectJobRow(jobId) {
+  document.querySelectorAll('tr[data-job-id]').forEach(row => {
+    const selected = row.dataset.jobId === jobId;
+    row.classList.toggle('job-row-selected', selected);
+    row.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+}
+
+async function loadJobDetails(jobId) {
+  const res = await fetch(`/jobs/${jobId}/status`);
+  if (!res.ok) return showToastGlobal('Could not load job details');
+  const data = await res.json();
+  selectJobRow(jobId);
+  const parts = [`<div><strong>Job:</strong> ${escapeJobDetail(data.id.slice(0, 8))}…</div>`];
+  if (data.job_type === 'text') {
+    parts.push(`<div style="margin-top:0.5rem;"><strong>Input:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeJobDetail(data.input_text || 'Original text unavailable')}</div></div>`);
+  } else {
+    parts.push(`<div><strong>Input:</strong> ${escapeJobDetail(data.input_filename || 'File')}</div>`);
+  }
+  parts.push(`<div><strong>Type:</strong> ${escapeJobDetail(data.job_type)}</div>`);
+  parts.push(`<div><strong>Lang:</strong> ${escapeJobDetail(data.source_language || 'Auto')} → ${escapeJobDetail(data.target_language_name || data.target_language)}</div>`);
+  parts.push(`<div><strong>Status:</strong> ${escapeJobDetail(data.status)}</div>`);
+  if (data.error_message) parts.push(`<div><strong>Error:</strong> ${escapeJobDetail(data.error_message)}</div>`);
+  if (data.output_text) parts.push(`<div style="margin-top:0.5rem;"><strong>Preview:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeJobDetail(data.output_text)}</div></div>`);
+  document.getElementById('modalBody').innerHTML = parts.join('');
+  document.getElementById('jobDetailsModal').style.display = 'block';
+
+  const downloads = [
+    ['downloadFileBtn', data.has_output_file, `/jobs/${jobId}/download`],
+    ['downloadAudioBtn', data.has_audio, `/jobs/${jobId}/download/audio`],
+    ['downloadSubsBtn', data.has_subtitles, `/jobs/${jobId}/download/subtitles`],
+    ['downloadVideoBtn', data.has_video, `/jobs/${jobId}/download/video`],
+  ];
+  downloads.forEach(([id, available, href]) => {
+    const link = document.getElementById(id);
+    link.style.display = available ? 'inline-block' : 'none';
+    link.href = href;
+  });
+}
+
+document.querySelectorAll('tr[data-job-id]').forEach(row => {
+  row.style.cursor = 'pointer';
+  row.addEventListener('click', event => {
+    if (event.target.closest('a') || event.target.closest('button')) return;
+    loadJobDetails(row.dataset.jobId);
+  });
+});
 </script>
 {% endblock %}

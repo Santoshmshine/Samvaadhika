@@ -24,20 +24,23 @@ def elapsed_seconds(started_at: datetime | None, ended_at: datetime | None = Non
     if started_at is None:
         return None
     ended_at = ended_at or datetime.utcnow()
+    if started_at.tzinfo is not None and ended_at.tzinfo is None:
+        ended_at = ended_at.replace(tzinfo=UTC)
+    elif started_at.tzinfo is None and ended_at.tzinfo is not None:
+        started_at = started_at.replace(tzinfo=UTC)
     return max(0, round((ended_at - started_at).total_seconds()))
 
 
 def estimate_remaining_seconds(
     elapsed: int | None,
     progress: int,
-    historical_durations: list[int] | None = None,
+    historical_durations: list[int | None] | None = None,
 ) -> int | None:
     if elapsed is None or progress <= 0 or progress >= 100:
         return None
     progress_estimate = elapsed * (100 - progress) / progress
-    historical_estimate = 0
-    if historical_durations:
-        historical_estimate = max(0, median(historical_durations) - elapsed)
+    valid_history = [duration for duration in historical_durations or [] if duration is not None]
+    historical_estimate = max(0, median(valid_history) - elapsed) if valid_history else 0
     return max(1, round(max(progress_estimate, historical_estimate)))
 
 
