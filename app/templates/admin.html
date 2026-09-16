@@ -84,7 +84,7 @@
   </div>
 
   <!-- Recent audit log -->
-  <div class="panel">
+  <div class="panel" id="recent-activity">
     <div class="panel-header">RECENT ACTIVITY</div>
     <div class="panel-body" style="padding:0;">
       <div class="table-wrap">
@@ -113,6 +113,30 @@
           </tbody>
         </table>
       </div>
+      {% if recent_logs %}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.85rem 1rem;border-top:1px solid var(--green-border);flex-wrap:wrap;">
+        <span class="text-muted" style="font-size:0.8rem;">
+          Showing {{ ((activity_page - 1) * activity_page_size) + 1 }}–{{ [activity_page * activity_page_size, total_activity] | min }} of {{ total_activity }} activities
+        </span>
+        {% if activity_total_pages > 1 %}
+        <nav aria-label="Recent activity pagination" style="display:flex;align-items:center;gap:0.35rem;">
+          {% if activity_page > 1 %}
+          <a href="/admin/?activity_page=1#recent-activity" class="btn btn-secondary btn-sm">First</a>
+          <a href="/admin/?activity_page={{ activity_page - 1 }}#recent-activity" class="btn btn-secondary btn-sm">Previous</a>
+          {% endif %}
+          {% for page_number in activity_page_numbers %}
+          <a href="/admin/?activity_page={{ page_number }}#recent-activity"
+             class="btn {% if page_number == activity_page %}btn-primary{% else %}btn-secondary{% endif %} btn-sm"
+             {% if page_number == activity_page %}aria-current="page"{% endif %}>{{ page_number }}</a>
+          {% endfor %}
+          {% if activity_page < activity_total_pages %}
+          <a href="/admin/?activity_page={{ activity_page + 1 }}#recent-activity" class="btn btn-secondary btn-sm">Next</a>
+          <a href="/admin/?activity_page={{ activity_total_pages }}#recent-activity" class="btn btn-secondary btn-sm">Last</a>
+          {% endif %}
+        </nav>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>

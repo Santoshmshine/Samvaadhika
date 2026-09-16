@@ -434,6 +434,17 @@ select.lang-select:focus {
 
 .job-item:last-child { border-bottom: none; }
 
+.job-item-clickable {
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.job-item-clickable:hover,
+.job-item-clickable:focus-visible {
+  background: var(--green-pale);
+  outline: none;
+}
+
 .job-status-icon {
   width: 28px; height: 28px;
   border-radius: 50%;
@@ -544,6 +555,11 @@ select.lang-select:focus {
 
 .text-box:focus { border-color: var(--green-mid); }
 
+.text-box:placeholder-shown {
+  padding-top: calc((160px - 1.5em) / 2);
+  text-align: center;
+}
+
 .result-box {
   min-height: 160px;
   padding: 0.85rem;
@@ -555,6 +571,13 @@ select.lang-select:focus {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-dark);
+}
+
+.result-box.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
 .result-placeholder { color: var(--text-muted); font-style: italic; }
@@ -692,6 +715,20 @@ table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th { background: var(--green-pale); color: var(--green-dark); font-weight: 700; padding: 0.6rem 0.8rem; text-align: left; border-bottom: 2px solid var(--green-border); }
 td { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--green-border); vertical-align: middle; }
 tr:hover td { background: var(--green-pale); }
+tr.job-row-selected td,
+tr.job-row-selected:hover td { background: #dcefd4; }
+tr.job-row-selected td:first-child { box-shadow: inset 4px 0 0 var(--green-mid); }
+
+.app-dialog {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
+.app-dialog::backdrop { background: rgba(20, 35, 20, 0.45); }
 
 /* ================================================================
    SPINNER

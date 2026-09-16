@@ -1,0 +1,694 @@
+--- STATUS ---
+
+## mohit-doc-test(feature/video-enhancement+main)...origin/mohit-doc-test(feature/video-enhancement+main)
+M  build.bat
+M  models_scripts/indic-parler-tts.py
+DU tests/test_video_dubbing.py
+?? data/
+?? debug_parler/
+?? inspection_report.txt
+?? tests/test_asr.py
+?? tests/test_time_utils.py
+?? venv312/
+--- REFS ---
+  feature/end-to-end-video-conversion                           0bc2b88e [origin/feature/end-to-end-video-conversion] Adding latest pipeline.py
+  feature/video-enhancement                                     a7398d48 [origin/feature/video-enhancement] autoTokenizer
+  main                                                          4b3af17f [origin/main: behind 22] Merge pull request #6 from Santoshmshine/feature/video-translation
+* mohit-doc-test(feature/video-enhancement+main)                da822025 [origin/mohit-doc-test(feature/video-enhancement+main)] final fix
+  mohit-work                                                    60db27dd [origin/feature/mohit-work] Improve offline translation setup and routing
++ test-failure-2026-09-08                                       62a1ce96 (C:/Users/mohit/git/test_failure_2026-09-08) [origin/test-failure-2026-09-08] docs: record translation cache incident and test results
+  remotes/origin/HEAD                                           -> origin/main
+  remotes/origin/bundle-ffmpeg-models                           c5b01837 Merge branch 'main' of https://github.com/Santoshmshine/Samvaadhika into bundle-ffmpeg-models
+  remotes/origin/feature/end-to-end-video-conversion            0bc2b88e Adding latest pipeline.py
+  remotes/origin/feature/fix-exe                                33cce61d Fixed job details ,pdf transalation and text transalation issues with exe
+  remotes/origin/feature/initial-commit                         37ad527e updated requirements
+  remotes/origin/feature/mohit-work                             60db27dd Improve offline translation setup and routing
+  remotes/origin/feature/video-enhancement                      a7398d48 autoTokenizer
+  remotes/origin/feature/video-translation                      454bffb8 changes for video
+  remotes/origin/main                                           f4d36514 Merge pull request #11 from Santoshmshine/mohit-doc-test(feature/video-enhancement+main)
+  remotes/origin/mohit-doc-test(feature/video-enhancement+main) da822025 final fix
+  remotes/origin/revert-4-feature/mohit-work                    f0c0d5e4 Revert "Improve offline translation setup and routing"
+  remotes/origin/test-failure-2026-09-08                        62a1ce96 docs: record translation cache incident and test results
+--- STAGE1 ---
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+import soundfile as sf
+
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from app.pipeline import (
+    _atempo_filter,
+    mux_translated_video,
+    probe_media_duration,
+    synthesize_timed_speech,
+)
+
+
+def test_atempo_filter_keeps_each_factor_in_supported_range():
+    factors = [float(item.split("=")[1]) for item in _atempo_filter(8.5).split(",")]
+
+    assert all(0.5 <= factor <= 2.0 for factor in factors)
+    assert np.prod(factors) == pytest.approx(8.5, rel=1e-5)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg is required")
+def test_synthesize_timed_speech_places_and_fits_segments(tmp_path):
+    sample_rate = 8000
+
+    def fake_synthesizer(text, language, output_path):
+        duration = 0.8 if text == "first" else 0.2
+        time = np.arange(round(duration * sample_rate)) / sample_rate
+        sf.write(output_path, 0.2 * np.sin(2 * np.pi * 440 * time), sample_rate)
+        return True
+
+    output_path = tmp_path / "timed.wav"
+    synthesize_timed_speech(
+        [
+            {"start": 0.5, "end": 1.0, "text": "first"},
+            {"start": 1.5, "end": 2.0, "text": "second"},
+        ],
+        "en",
+        output_path,
+        total_duration=2.5,
+        synthesizer=fake_synthesizer,
+        sample_rate=sample_rate,
+    )
+
+    audio, actual_rate = sf.read(output_path)
+    assert actual_rate == sample_rate
+    assert len(audio) == round(2.5 * sample_rate)
+    assert np.max(np.abs(audio[:round(0.5 * sample_rate)])) == 0
+    assert np.max(np.abs(audio[round(0.55 * sample_rate):round(0.95 * sample_rate)])) > 0.05
+    assert np.max(np.abs(audio[round(1.05 * sample_rate):round(1.5 * sample_rate)])) == 0
+    assert np.max(np.abs(audio[round(1.55 * sample_rate):round(1.95 * sample_rate)])) > 0.05
+    assert np.max(np.abs(audio[round(2.0 * sample_rate):])) == 0
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_translated_video_contains_video_audio_and_subtitles(tmp_path):
+    video_path = tmp_path / "input.mp4"
+    audio_path = tmp_path / "dub.wav"
+    subtitle_path = tmp_path / "translated.srt"
+    output_path = tmp_path / "translated.mp4"
+
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=3:r=25",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    sample_rate = 44100
+    time = np.arange(3 * sample_rate) / sample_rate
+    sf.write(audio_path, 0.15 * np.sin(2 * np.pi * 440 * time), sample_rate)
+    subtitle_path.write_text(
+        "1\n00:00:00,500 --> 00:00:01,500\nañ¿añ«añ+aÑìaññaÑç añªaÑüañ¿añ+añ»añ+\n",
+        encoding="utf-8",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "hi")
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    codecs = {
+        (stream["codec_type"], stream["codec_name"])
+        for stream in json.loads(result.stdout)["streams"]
+    }
+
+    assert ("video", "h264") in codecs
+    assert ("audio", "aac") in codecs
+    assert ("subtitle", "mov_text") in codecs
+    assert probe_media_duration(output_path) == pytest.approx(3.0, abs=0.1)
+--- STAGE3 ---
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import soundfile as sf
+from fontTools.ttLib import TTFont
+
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from app.pipeline import (
+    _atempo_filter,
+    detect_dominant_voice_gender,
+    mux_translated_video,
+    probe_media_duration,
+    synthesize_timed_speech,
+    tts_voice_description,
+)
+
+
+def _create_mux_inputs(
+    tmp_path,
+    *,
+    video_duration=3.0,
+    audio_duration=3.0,
+    size="320x240",
+    frame_rate="25",
+    include_source_audio=False,
+    subtitle_text="1\n00:00:00,500 --> 00:00:01,500\nañ¿añ«añ+aÑìaññaÑç añªaÑüañ¿añ+añ»añ+\n",
+    video_filter=None,
+    source_pixel_format="yuv420p",
+):
+    video_path = tmp_path / "input.mp4"
+    audio_path = tmp_path / "dub.wav"
+    subtitle_path = tmp_path / "translated.srt"
+    output_path = tmp_path / "translated.mp4"
+
+    video_command = [
+        "ffmpeg", "-y", "-f", "lavfi", "-i",
+        f"color=c=blue:s={size}:d={video_duration}:r={frame_rate}",
+    ]
+    if include_source_audio:
+        video_command.extend([
+            "-f", "lavfi", "-i", f"sine=frequency=220:duration={video_duration}",
+            "-map", "0:v:0", "-map", "1:a:0", "-shortest",
+        ])
+    if video_filter:
+        video_command.extend(["-vf", video_filter])
+    video_command.extend([
+        "-c:v", "libx264", "-pix_fmt", source_pixel_format, str(video_path),
+    ])
+    subprocess.run(video_command, check=True, capture_output=True)
+    sample_rate = 44100
+    time = np.arange(round(audio_duration * sample_rate)) / sample_rate
+    sf.write(audio_path, 0.15 * np.sin(2 * np.pi * 440 * time), sample_rate)
+    subtitle_path.write_text(subtitle_text, encoding="utf-8")
+    return video_path, audio_path, subtitle_path, output_path
+
+
+def _probe_streams(media_path):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(media_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)["streams"]
+
+
+def test_atempo_filter_keeps_each_factor_in_supported_range():
+    factors = [float(item.split("=")[1]) for item in _atempo_filter(8.5).split(",")]
+
+    assert all(0.5 <= factor <= 2.0 for factor in factors)
+    assert np.prod(factors) == pytest.approx(8.5, rel=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("frequency", "expected_gender"),
+    [(120, "male"), (220, "female")],
+)
+def test_detect_dominant_voice_gender_from_pitch(tmp_path, frequency, expected_gender):
+    sample_rate = 16000
+    time = np.arange(3 * sample_rate) / sample_rate
+    input_path = tmp_path / f"{expected_gender}.wav"
+    sf.write(input_path, 0.2 * np.sin(2 * np.pi * frequency * time), sample_rate)
+
+    assert detect_dominant_voice_gender(input_path) == expected_gender
+
+
+def test_voice_gender_detection_uses_speech_segments(tmp_path):
+    sample_rate = 16000
+    time = np.arange(2 * sample_rate) / sample_rate
+    audio = np.concatenate([
+        0.2 * np.sin(2 * np.pi * 220 * time),
+        0.2 * np.sin(2 * np.pi * 120 * time),
+    ])
+    input_path = tmp_path / "mixed.wav"
+    sf.write(input_path, audio, sample_rate)
+
+    assert detect_dominant_voice_gender(
+        input_path,
+        [{"start": 2.0, "end": 4.0}],
+    ) == "male"
+
+
+def test_voice_description_uses_recommended_named_speaker():
+    assert tts_voice_description("hi", "male").startswith("Rohit speaks")
+    assert tts_voice_description("hi", "female").startswith("Divya speaks")
+    assert tts_voice_description("mr", "male").startswith("Sanjay speaks")
+    assert tts_voice_description("mr", "female").startswith("Sunita speaks")
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg is required")
+def test_synthesize_timed_speech_places_and_fits_segments(tmp_path):
+    sample_rate = 8000
+
+    calls = []
+
+    def fake_synthesizer(text, language, output_path, **kwargs):
+        calls.append(kwargs)
+        duration = 0.8 if text == "first" else 0.2
+        time = np.arange(round(duration * sample_rate)) / sample_rate
+        sf.write(output_path, 0.2 * np.sin(2 * np.pi * 440 * time), sample_rate)
+        return True
+
+    output_path = tmp_path / "timed.wav"
+    synthesize_timed_speech(
+        [
+            {"start": 0.5, "end": 1.0, "text": "first"},
+            {"start": 1.5, "end": 2.0, "text": "second"},
+        ],
+        "en",
+        output_path,
+        total_duration=2.5,
+        synthesizer=fake_synthesizer,
+        sample_rate=sample_rate,
+        voice_description="Thoma speaks with a consistent tone.",
+        seed=17,
+    )
+
+    audio, actual_rate = sf.read(output_path)
+    assert actual_rate == sample_rate
+    assert len(audio) == round(2.5 * sample_rate)
+    assert np.max(np.abs(audio[:round(0.5 * sample_rate)])) == 0
+    assert np.max(np.abs(audio[round(0.55 * sample_rate):round(0.95 * sample_rate)])) > 0.05
+    assert np.max(np.abs(audio[round(1.05 * sample_rate):round(1.5 * sample_rate)])) == 0
+    assert np.max(np.abs(audio[round(1.55 * sample_rate):round(1.95 * sample_rate)])) > 0.05
+    assert np.max(np.abs(audio[round(2.0 * sample_rate):])) == 0
+    assert calls == [
+        {"voice_description": "Thoma speaks with a consistent tone.", "seed": 17},
+        {"voice_description": "Thoma speaks with a consistent tone.", "seed": 17},
+    ]
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_translated_video_contains_video_audio_and_subtitles(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(tmp_path)
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "hi")
+    streams = _probe_streams(output_path)
+    codecs = {
+        (stream["codec_type"], stream["codec_name"])
+        for stream in streams
+    }
+    subtitle_stream = next(
+        stream
+        for stream in streams
+        if stream["codec_type"] == "subtitle"
+    )
+
+    assert [stream["codec_type"] for stream in streams] == ["video", "audio", "subtitle"]
+    assert ("video", "h264") in codecs
+    assert ("audio", "aac") in codecs
+    assert ("subtitle", "mov_text") in codecs
+    assert subtitle_stream.get("tags", {}).get("language") in {"hi", "hin"}
+    assert subtitle_stream["disposition"]["default"] == 1
+    assert probe_media_duration(output_path) == pytest.approx(3.0, abs=0.1)
+
+    extracted_subtitles = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-i", str(output_path), "-map", "0:s:0",
+            "-f", "srt", "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    assert "añ¿añ«añ+aÑìaññaÑç añªaÑüañ¿añ+añ»añ+" in extracted_subtitles
+
+    frame = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-ss", "0.5", "-i", str(output_path),
+            "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    pixels = np.frombuffer(frame.stdout, dtype=np.uint8).reshape(240, 320, 3)
+    attribution_region = pixels[8:55, 20:315]
+    assert np.count_nonzero(np.all(attribution_region > 180, axis=2)) > 20
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_replaces_source_audio_and_preserves_video_duration(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=1.2,
+        audio_duration=2.5,
+        frame_rate="30000/1001",
+        include_source_audio=True,
+        subtitle_text="1\n00:00:00,200 --> 00:00:00,800\nañ¿añ«añ+aÑìaññaÑç añªaÑüañ¿añ+añ»añ+\n",
+        video_filter="setsar=4/3",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "mr")
+    streams = _probe_streams(output_path)
+    video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
+
+    assert [stream["codec_type"] for stream in streams].count("audio") == 1
+    assert video_stream["width"] == 320
+    assert video_stream["height"] == 240
+    assert video_stream["sample_aspect_ratio"] == "4:3"
+    assert float(video_stream["avg_frame_rate"].split("/")[0]) > 0
+    assert probe_media_duration(output_path) == pytest.approx(1.2, abs=0.15)
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_preserves_video_duration_when_dubbed_audio_is_shorter(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=2.0,
+        audio_duration=0.6,
+        subtitle_text="",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+
+    assert probe_media_duration(output_path) == pytest.approx(2.0, abs=0.15)
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_normalizes_video_for_broad_mp4_playback(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=1.0,
+        audio_duration=1.0,
+        subtitle_text="",
+        source_pixel_format="yuv444p",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+    video_stream = next(
+        stream for stream in _probe_streams(output_path) if stream["codec_type"] == "video"
+    )
+
+    assert video_stream["pix_fmt"] == "yuv420p"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_pads_odd_dimensions_for_h264_compatibility(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=1.0,
+        audio_duration=1.0,
+        size="321x241",
+        subtitle_text="",
+        source_pixel_format="yuv444p",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+    video_stream = next(
+        stream for stream in _probe_streams(output_path) if stream["codec_type"] == "video"
+    )
+
+    assert (video_stream["width"], video_stream["height"]) == (322, 242)
+    assert video_stream["pix_fmt"] == "yuv420p"
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_succeeds_without_subtitle_cues(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        subtitle_text="",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+
+    assert [stream["codec_type"] for stream in _probe_streams(output_path)] == ["video", "audio"]
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+@pytest.mark.parametrize("size", ["180x320", "96x64"])
+def test_mux_supports_portrait_and_small_videos(tmp_path, size):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=1.0,
+        audio_duration=1.0,
+        size=size,
+        subtitle_text="",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+    video_stream = next(
+        stream for stream in _probe_streams(output_path) if stream["codec_type"] == "video"
+    )
+
+    expected_width, expected_height = map(int, size.split("x"))
+    assert (video_stream["width"], video_stream["height"]) == (expected_width, expected_height)
+
+    frame = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-ss", "0.5", "-i", str(output_path),
+            "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    pixels = np.frombuffer(frame.stdout, dtype=np.uint8).reshape(
+        expected_height, expected_width, 3
+    )
+    changed_pixels = np.argwhere(
+        (pixels[:, :, 0] > 20) | (pixels[:, :, 1] > 20) | (pixels[:, :, 2] < 220)
+    )
+
+    assert len(changed_pixels) > 20
+    assert changed_pixels[:, 1].min() >= 2
+    assert changed_pixels[:, 1].max() <= expected_width - 3
+    assert changed_pixels[:, 0].max() < expected_height // 2
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="ffmpeg and ffprobe are required",
+)
+def test_mux_supports_unicode_and_space_paths(tmp_path):
+    media_dir = tmp_path / "añ«añ¦añ+añáaÑÇ media files"
+    media_dir.mkdir()
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        media_dir,
+        video_duration=1.0,
+        audio_duration=1.0,
+        subtitle_text="",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "mr")
+
+    assert output_path.exists()
+    assert probe_media_duration(output_path) == pytest.approx(1.0, abs=0.15)
+
+
+def test_attribution_font_contains_every_disclaimer_glyph():
+    font_path = project_root / "fonts" / "NotoSansDevanagari-VariableFont_wdth,wght.ttf"
+    font = TTFont(font_path, lazy=True)
+    try:
+        character_map = font.getBestCmap()
+        missing = {
+            character for character in "Translated using Samvaadhika"
+            if not character.isspace() and ord(character) not in character_map
+        }
+    finally:
+        font.close()
+
+    assert missing == set()
+
+
+def test_attribution_font_is_declared_in_both_build_paths():
+    spec_text = (project_root / "samvaadhika.spec").read_text(encoding="utf-8")
+    build_text = (project_root / "build.bat").read_text(encoding="utf-8")
+
+    assert "datas += _add_tree('fonts', 'fonts')" in spec_text
+    assert 'xcopy /E /I /Y "fonts" "dist\\Samvaadhika\\fonts"' in build_text
+
+
+def test_mux_reports_missing_attribution_font(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.pipeline.BASE_DIR", tmp_path)
+
+    with pytest.raises(RuntimeError, match="Video attribution font is missing"):
+        mux_translated_video(
+            tmp_path / "video.mp4",
+            tmp_path / "audio.wav",
+            tmp_path / "subtitles.srt",
+            tmp_path / "output.mp4",
+            "en",
+        )
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg is required")
+def test_mux_failure_preserves_existing_output(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=1.0,
+        audio_duration=1.0,
+    )
+    subtitle_path.write_text("not valid srt", encoding="utf-8")
+    output_path.write_bytes(b"existing-output")
+
+    with pytest.raises(RuntimeError, match="ffmpeg video mux failed"):
+        mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+
+    assert output_path.read_bytes() == b"existing-output"
+
+
+def test_mux_late_encoder_failure_preserves_existing_output(tmp_path, monkeypatch):
+    video_path = tmp_path / "input.mp4"
+    audio_path = tmp_path / "dub.wav"
+    subtitle_path = tmp_path / "translated.srt"
+    output_path = tmp_path / "translated.mp4"
+    subtitle_path.write_text("1\n00:00:00,000 --> 00:00:00,500\nText\n", encoding="utf-8")
+    output_path.write_bytes(b"existing-output")
+
+    def fail_after_writing(command, **kwargs):
+        Path(command[-1]).write_bytes(b"partial-output")
+        return SimpleNamespace(returncode=1, stderr=b"simulated encoder failure")
+
+    monkeypatch.setattr("app.pipeline.probe_media_duration", lambda path: 1.0)
+    monkeypatch.setattr("app.pipeline.subprocess.run", fail_after_writing)
+
+    with pytest.raises(RuntimeError, match="simulated encoder failure"):
+        mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+
+    assert output_path.read_bytes() == b"existing-output"
+
+
+@pytest.mark.skipif(not shutil.which("ffprobe"), reason="ffprobe is required")
+def test_mux_reports_corrupt_video_without_creating_output(tmp_path):
+    video_path = tmp_path / "corrupt.mp4"
+    audio_path = tmp_path / "dub.wav"
+    subtitle_path = tmp_path / "translated.srt"
+    output_path = tmp_path / "translated.mp4"
+    video_path.write_bytes(b"not a video")
+    sf.write(audio_path, [0.0] * 8000, 8000)
+    subtitle_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="ffprobe failed"):
+        mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+
+    assert not output_path.exists()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg is required")
+def test_successful_mux_removes_temporary_output(tmp_path):
+    video_path, audio_path, subtitle_path, output_path = _create_mux_inputs(
+        tmp_path,
+        video_duration=1.0,
+        audio_duration=1.0,
+        subtitle_text="",
+    )
+
+    mux_translated_video(video_path, audio_path, subtitle_path, output_path, "en")
+
+    assert output_path.exists()
+    assert list(tmp_path.glob(".translated-*.mp4")) == []
+--- TIME UTILS 70896286 ---
+from datetime import datetime, timedelta, timezone
+from statistics import median
+
+
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+UTC = timezone.utc
+
+
+def utc_to_ist(value: datetime | None) -> datetime | None:
+    """Convert a stored naive UTC datetime to an IST-aware datetime."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(IST)
+
+
+def format_ist(value: datetime | None, format_string: str) -> str:
+    converted = utc_to_ist(value)
+    return converted.strftime(format_string) if converted else "-"
+
+
+def elapsed_seconds(started_at: datetime | None, ended_at: datetime | None = None) -> int | None:
+    if started_at is None:
+        return None
+    ended_at = ended_at or datetime.utcnow()
+    return max(0, round((ended_at - started_at).total_seconds()))
+
+
+def estimate_remaining_seconds(
+    elapsed: int | None,
+    progress: int,
+    historical_durations: list[int] | None = None,
+) -> int | None:
+    if elapsed is None or progress <= 0 or progress >= 100:
+        return None
+    progress_estimate = elapsed * (100 - progress) / progress
+    historical_estimate = 0
+    if historical_durations:
+        historical_estimate = max(0, median(historical_durations) - elapsed)
+    return max(1, round(max(progress_estimate, historical_estimate)))
+
+
+def format_duration(seconds: int | float | None) -> str:
+    if seconds is None:
+        return "-"
+    total_seconds = max(0, round(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def format_duration_between(started_at: datetime | None, ended_at: datetime | None) -> str:
+    return format_duration(elapsed_seconds(started_at, ended_at))
+--- TIME UTILS c7ea87f4 ---
+from datetime import datetime, timedelta, timezone
+
+
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+UTC = timezone.utc
+
+
+def utc_to_ist(value: datetime | None) -> datetime | None:
+    """Convert a stored naive UTC datetime to an IST-aware datetime."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(IST)
+
+
+def format_ist(value: datetime | None, format_string: str) -> str:
+    converted = utc_to_ist(value)
+    return converted.strftime(format_string) if converted else "-"

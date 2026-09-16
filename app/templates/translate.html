@@ -20,7 +20,7 @@
           </div>
           <div>
             <label class="form-label">Translation</label>
-            <div class="result-box" id="translationResult" style="min-height:180px;">
+            <div class="result-box is-empty" id="translationResult" style="min-height:180px;">
               <span class="result-placeholder">Translation will appear here…</span>
             </div>
             <div id="translationMeta" class="hidden" style="margin-top:0.4rem;font-size:0.75rem;color:var(--text-muted);display:flex;gap:0.75rem;align-items:center;">
@@ -46,6 +46,9 @@
           <button class="btn btn-primary" id="textTranslateBtn" onclick="translateText()" disabled>
             Translate
           </button>
+          <button class="btn btn-secondary" type="button" onclick="resetTextTranslation()">
+            ↺ Reset
+          </button>
           <span class="spinner hidden" id="textSpinner"></span>
         </div>
 
@@ -62,6 +65,8 @@
 
 {% block scripts %}
 <script>
+let textRequestVersion = 0;
+
 function onTextInput() {
   const txt = document.getElementById('sourceText').value;
   document.getElementById('charCount').textContent = txt.length;
@@ -75,6 +80,9 @@ async function translateText() {
   const tgt = document.getElementById('textTargetLang').value;
   const spinner = document.getElementById('textSpinner');
   const btn = document.getElementById('textTranslateBtn');
+  const result = document.getElementById('translationResult');
+  const requestVersion = ++textRequestVersion;
+  result.classList.remove('is-empty');
   spinner.classList.remove('hidden');
   btn.disabled = true;
 
@@ -86,19 +94,38 @@ async function translateText() {
   try {
     const res = await fetch('/translate/text', { method: 'POST', body: fd });
     const data = await res.json();
+    if (requestVersion !== textRequestVersion) return;
     if (!res.ok) throw new Error(data.detail || 'Translation failed');
-    document.getElementById('translationResult').textContent = data.translated_text;
+    result.textContent = data.translated_text;
     document.getElementById('detectedLangText').textContent =
       'Detected: ' + (data.source_language_name || data.source_language);
     document.getElementById('translationMeta').classList.remove('hidden');
     if (data.from_cache) document.getElementById('fromCacheTag').classList.remove('hidden');
     else document.getElementById('fromCacheTag').classList.add('hidden');
   } catch(e) {
-    document.getElementById('translationResult').textContent = 'Error: ' + e.message;
+    if (requestVersion !== textRequestVersion) return;
+    result.textContent = 'Error: ' + e.message;
   } finally {
+    if (requestVersion !== textRequestVersion) return;
     spinner.classList.add('hidden');
     btn.disabled = false;
   }
+}
+
+function resetTextTranslation() {
+  textRequestVersion++;
+  const source = document.getElementById('sourceText');
+  const result = document.getElementById('translationResult');
+  source.value = '';
+  document.getElementById('charCount').textContent = '0';
+  document.getElementById('textTranslateBtn').disabled = true;
+  document.getElementById('textSpinner').classList.add('hidden');
+  result.classList.add('is-empty');
+  result.innerHTML = '<span class="result-placeholder">Translation will appear here…</span>';
+  document.getElementById('translationMeta').classList.add('hidden');
+  document.getElementById('detectedLangText').textContent = '';
+  document.getElementById('fromCacheTag').classList.add('hidden');
+  source.focus();
 }
 </script>
 {% endblock %}

@@ -10,6 +10,7 @@ are downloaded — each stub logs a clear message and returns a placeholder resu
 """
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -132,8 +133,12 @@ _whisper_model = None
 _lang_detector = None
 _translation_models = {}
 _translation_model_lock = threading.Lock()
+_parler_runtime = None
+_parler_lock = threading.Lock()
 
-TRANSLATION_PIPELINE_VERSION = "indictrans2-v2"
+TRANSLATION_PIPELINE_VERSION = "indictrans2-v3"
+ASR_MIN_AVG_LOGPROB = -1.5
+MEDIA_REVIEW_CONFIDENCE = 0.8
 
 
 def _get_whisper():
@@ -374,7 +379,32 @@ def fix_mojibake(text: str) -> str:
             return text
 
 
-def detect_and_fix_transliterated_segment(text: str, asr_hint: Optional[str] = None) -> (str, str):
+_MARATHI_ASR_NORMALIZATIONS = (
+    ("मस्ता है", "मस्त आहे"),
+    ("मस्टा हे", "मस्त आहे"),
+    ("मस्ता हे", "मस्त आहे"),
+    ("निगा लोए", "निघालोय"),
+    ("गरिच चाल लोए", "घरीच चाललोय"),
+    ("गरीच चाल लोए", "घरीच चाललोय"),
+    ("कुते", "कुठे"),
+    ("तु", "तू"),
+    ("पन", "पण"),
+)
+
+
+def normalize_marathi_asr_text(text: str) -> str:
+    """Repair conservative, recurring Marathi Whisper spelling variants."""
+    normalized = text
+    for source, replacement in _MARATHI_ASR_NORMALIZATIONS:
+        pattern = rf"(?<![\u0900-\u097F]){re.escape(source)}(?![\u0900-\u097F])"
+        normalized = re.sub(pattern, replacement, normalized)
+    return normalized
+
+
+def detect_and_fix_transliterated_segment(
+    text: str,
+    asr_hint: Optional[str] = None,
+) -> Tuple[str, str]:
     """Detect if `text` is a Latin-script transliteration of Hindi/Marathi.
     If so, attempt to transliterate to Devanagari and return (fixed_text, lang).
     Otherwise return (original_text, detected_lang).
@@ -522,7 +552,13 @@ def translation_cache_hash(text: str, source_lang: str, target_lang: str) -> str
     )
 
 
-_PROTECTED_TEXT_PATTERN = re.compile(r"(https?://[^\s]+|www\.[^\s]+|\r\n|\r|\n)")
+_PROTECTED_TEXT_PATTERN = re.compile(
+    r"(https?://[^\s]+|www\.[^\s]+|"
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+|"
+    r"\r\n|\r|\n)"
+)
 
 _CURATED_IDIOM_TRANSLATIONS = {
     ("en", "mr", "it is raining cats and dogs outside"): "बाहेर मुसळधार पाऊस पडत आहे।",
@@ -546,7 +582,7 @@ def _prepare_translation_part(text: str, source_lang: str) -> str:
 
 
 def _translate_preserving_protected_text(text: str, translate_part) -> str:
-    """Translate prose while preserving URLs and original line separators."""
+    """Translate prose while preserving URLs, emails, and line separators."""
     parts = _PROTECTED_TEXT_PATTERN.split(text)
     translated_parts = []
     for part in parts:
@@ -651,11 +687,11 @@ def _translate_indictrans2(text: str, src: str, tgt: str) -> Tuple[str, float]:
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=256,
             )
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs, max_length=512, num_beams=5, use_cache=False
+                    **inputs, max_length=256, num_beams=5, use_cache=False
                 )
 
             tokenizer._switch_to_target_mode()
@@ -713,6 +749,27 @@ def apply_glossary(text: str, source_lang: str, target_lang: str, db) -> str:
 # ASR — Speech to Text
 # ---------------------------------------------------------------------------
 
+def media_translation_confidence(segments: list, mt_confidences: list[float]) -> float:
+    """Combine actual ASR token likelihood with MT direction confidence."""
+    asr_scores = [
+        math.exp(min(0.0, float(segment["asr_avg_logprob"])))
+        for segment in segments
+        if segment.get("asr_avg_logprob") is not None
+    ]
+    asr_confidence = sum(asr_scores) / len(asr_scores) if asr_scores else 0.0
+    mt_confidence = min(mt_confidences) if mt_confidences else 0.0
+    return round(min(asr_confidence, mt_confidence), 4)
+
+
+def _asr_transcribe_options(language: Optional[str], vad_filter: bool) -> dict:
+    return {
+        "language": language,
+        "task": "transcribe",
+        "beam_size": 5,
+        "vad_filter": vad_filter,
+        "condition_on_previous_text": False,
+    }
+
 def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[list, str]:
     """
     Transcribe audio file. Returns (segments, detected_language).
@@ -727,9 +784,7 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
         # First attempt with VAD enabled (faster, skips silence)
         segments_iter, info = model.transcribe(
             str(audio_path),
-            language=language,
-            beam_size=5,
-            vad_filter=True,
+            **_asr_transcribe_options(language, vad_filter=True),
         )
         segments = []
         for s in segments_iter:
@@ -748,6 +803,14 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 hex_replace = ""
             avg_logprob = getattr(s, "avg_logprob", None)
             no_speech_prob = getattr(s, "no_speech_prob", None)
+            if avg_logprob is not None and avg_logprob < ASR_MIN_AVG_LOGPROB:
+                logger.warning(
+                    "Skipping unreliable ASR segment %.2f-%.2f (avg_logprob=%.2f)",
+                    s.start,
+                    s.end,
+                    avg_logprob,
+                )
+                continue
             segments.append({
                 "start": s.start,
                 "end": s.end,
@@ -775,9 +838,7 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 logger.info(f"ASR VAD produced only {total_speech:.1f}s speech from {duration:.1f}s audio; retrying without VAD.")
                 segments_iter, info = model.transcribe(
                     str(audio_path),
-                    language=language,
-                    beam_size=5,
-                    vad_filter=False,
+                    **_asr_transcribe_options(language, vad_filter=False),
                 )
                 segments = []
                 for s in segments_iter:
@@ -796,6 +857,14 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                         hex_replace = ""
                     avg_logprob = getattr(s, "avg_logprob", None)
                     no_speech_prob = getattr(s, "no_speech_prob", None)
+                    if avg_logprob is not None and avg_logprob < ASR_MIN_AVG_LOGPROB:
+                        logger.warning(
+                            "Skipping unreliable ASR segment %.2f-%.2f (avg_logprob=%.2f)",
+                            s.start,
+                            s.end,
+                            avg_logprob,
+                        )
+                        continue
                     segments.append({
                         "start": s.start,
                         "end": s.end,
@@ -824,6 +893,11 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
                 logger.info("ASR: no segments produced.")
         except Exception:
             pass
+        logger.info(
+            "ASR language requested=%s detected=%s",
+            language or "auto",
+            info.language,
+        )
         return segments, info.language
     except Exception as e:
         logger.error(f"ASR transcription failed: {e}")
@@ -834,14 +908,85 @@ def transcribe_audio(audio_path: Path, language: Optional[str] = None) -> Tuple[
 # TTS — Text to Speech
 # ---------------------------------------------------------------------------
 
-def synthesize_speech(text: str, language: str, output_path: Path) -> bool:
+TTS_SPEAKERS = {
+    "en": {"male": "Thoma", "female": "Mary"},
+    "hi": {"male": "Rohit", "female": "Divya"},
+    "mr": {"male": "Sanjay", "female": "Sunita"},
+}
+
+
+def detect_dominant_voice_gender(audio_path: Path, speech_segments: Optional[list] = None) -> str:
+    """Classify the dominant source voice from its median fundamental frequency."""
+    import librosa
+    import numpy as np
+
+    audio, sample_rate = librosa.load(str(audio_path), sr=16000, mono=True, duration=60.0)
+    if speech_segments:
+        speech_audio = []
+        for segment in speech_segments:
+            start_sample = max(0, round(float(segment["start"]) * sample_rate))
+            end_sample = min(len(audio), round(float(segment["end"]) * sample_rate))
+            if end_sample > start_sample:
+                speech_audio.append(audio[start_sample:end_sample])
+        if speech_audio:
+            audio = np.concatenate(speech_audio)
+    if audio.size < sample_rate:
+        logger.warning("Voice gender detection received too little audio; using female voice.")
+        return "female"
+
+    fundamental = librosa.yin(
+        audio,
+        fmin=65,
+        fmax=350,
+        sr=sample_rate,
+        frame_length=2048,
+        hop_length=512,
+    )
+    energy = librosa.feature.rms(
+        y=audio,
+        frame_length=2048,
+        hop_length=512,
+    ).squeeze()
+    frame_count = min(len(fundamental), len(energy))
+    fundamental = fundamental[:frame_count]
+    energy = energy[:frame_count]
+    energy_floor = max(0.005, float(np.percentile(energy, 40)))
+    voiced_pitch = fundamental[np.isfinite(fundamental) & (energy >= energy_floor)]
+    if voiced_pitch.size < 10:
+        logger.warning("Voice gender detection found insufficient voiced audio; using female voice.")
+        return "female"
+
+    median_pitch = float(np.median(voiced_pitch))
+    gender = "male" if median_pitch < 170.0 else "female"
+    logger.info("Detected dominant source voice: %s (median pitch %.1f Hz)", gender, median_pitch)
+    return gender
+
+
+def tts_voice_description(language: str, gender: str) -> str:
+    """Build a stable named-speaker caption for an Indic Parler target language."""
+    speakers = TTS_SPEAKERS.get(language, TTS_SPEAKERS["en"])
+    speaker = speakers.get(gender, speakers["female"])
+    return (
+        f"{speaker} speaks at a moderate pace with a natural pitch and a consistent, "
+        "clear tone. The recording is very high quality, close-sounding, and has no "
+        "background noise."
+    )
+
+
+def synthesize_speech(
+    text: str,
+    language: str,
+    output_path: Path,
+    voice_description: Optional[str] = None,
+    seed: int = 42,
+) -> bool:
     """
     Generate speech audio from text using Indic Parler-TTS (preferred)
     or pyttsx3 stub fallback.
     Returns True on success.
     """
     try:
-        return _tts_parler(text, language, output_path)
+        return _tts_parler(text, language, output_path, voice_description, seed)
     except Exception as e:
         logger.warning(f"Parler-TTS unavailable ({e}), trying pyttsx3 stub.")
         logger.debug("Parler-TTS exception details:", exc_info=True)
@@ -889,8 +1034,15 @@ def _split_tts_text(text: str, tokenizer, max_tokens: int = 40) -> list[str]:
     return chunks or [text.strip()]
 
 
-def _tts_parler(text: str, language: str, output_path: Path) -> bool:
+def _tts_parler(
+    text: str,
+    language: str,
+    output_path: Path,
+    voice_description: Optional[str] = None,
+    seed: int = 42,
+) -> bool:
     """AI4Bharat Indic Parler-TTS — Stable version-agnostic tokenization engine."""
+    global _parler_runtime
     import torch
     # Prepare monkeypatch
     _orig_jit_script = getattr(torch.jit, "script", None)
@@ -912,44 +1064,51 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
         import numpy as np
         import soundfile as sf
 
-        model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
-        if model_dir is None:
-            raise FileNotFoundError(
-                "Parler-TTS model not found. Expected at models/indic-parler-tts/"
-            )
+        with _parler_lock:
+            if _parler_runtime is None:
+                model_dir = _find_model_dir("indic-parler-tts", "parler-tts")
+                if model_dir is None:
+                    raise FileNotFoundError(
+                        "Parler-TTS model not found. Expected at models/indic-parler-tts/"
+                    )
 
-        desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
-        if not desc_tokenizer_dir.exists():
-            raise FileNotFoundError(
-                "Parler-TTS description tokenizer not found. Expected at "
-                "models/indic-parler-tts-description-tokenizer/"
-            )
-        logger.info(
-            "Loading Parler-TTS tokenizers from prompt=%s, description=%s",
-            model_dir,
-            desc_tokenizer_dir,
-        )
-        # The slow tokenizers read the SentencePiece model directly. This avoids
-        # tokenizer.json schema incompatibilities across packaged tokenizers builds.
-        prompt_tokenizer = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False)
-        description_tokenizer = AutoTokenizer.from_pretrained(
-            str(desc_tokenizer_dir), use_fast=False
-        )
+                desc_tokenizer_dir = MODELS_DIR / "indic-parler-tts-description-tokenizer"
+                if not desc_tokenizer_dir.exists():
+                    raise FileNotFoundError(
+                        "Parler-TTS description tokenizer not found. Expected at "
+                        "models/indic-parler-tts-description-tokenizer/"
+                    )
+                logger.info(
+                    "Loading Parler-TTS tokenizers from prompt=%s, description=%s",
+                    model_dir,
+                    desc_tokenizer_dir,
+                )
+                prompt_tokenizer = AutoTokenizer.from_pretrained(
+                    str(model_dir), use_fast=False
+                )
+                description_tokenizer = AutoTokenizer.from_pretrained(
+                    str(desc_tokenizer_dir), use_fast=False
+                )
 
-        try:
-            cfg = AutoConfig.from_pretrained(str(model_dir))
-        except Exception:
-            cfg = None
+                try:
+                    cfg = AutoConfig.from_pretrained(str(model_dir))
+                except Exception:
+                    cfg = None
 
-        if cfg is not None:
-            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir), config=cfg)
-        else:
-            model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
-        model.eval()
+                if cfg is not None:
+                    model = ParlerTTSForConditionalGeneration.from_pretrained(
+                        str(model_dir), config=cfg
+                    )
+                else:
+                    model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir))
+                model.eval()
+                _parler_runtime = (model, prompt_tokenizer, description_tokenizer)
+            else:
+                model, prompt_tokenizer, description_tokenizer = _parler_runtime
 
         # Clean prompt text to guarantee no formatting character overflows boundaries
         text = text.strip().replace("\n", " ")
-        description = "A female speaker delivers a clear, natural voice."
+        description = voice_description or tts_voice_description(language, "female")
 
         # Ensure uniform padding tokens across all sub-components safely
         for tok in [prompt_tokenizer, description_tokenizer]:
@@ -965,12 +1124,13 @@ def _tts_parler(text: str, language: str, output_path: Path) -> bool:
             truncation=True,
             max_length=512,
         )
-        with torch.no_grad():
+        with _parler_lock, torch.no_grad():
             chunks = _split_tts_text(text, prompt_tokenizer)
             sr = getattr(model.config, "sampling_rate", None) or 44100
             audio_parts = []
             logger.info("Synthesizing Parler-TTS in %d chunk(s)", len(chunks))
             for index, chunk in enumerate(chunks, start=1):
+                torch.manual_seed(seed)
                 prompt_tok = prompt_tokenizer(
                     chunk,
                     return_tensors="pt",
@@ -1033,6 +1193,181 @@ def _tts_pyttsx3(text: str, language: str, output_path: Path) -> bool:
     except Exception as e:
         logger.warning(f"Internal pyttsx3 system generation failure: {e}")
         return False
+
+
+def _atempo_filter(tempo: float) -> str:
+    """Build an FFmpeg atempo chain using conservative 0.5-2.0 factors."""
+    factors = []
+    while tempo > 2.0:
+        factors.append(2.0)
+        tempo /= 2.0
+    while tempo < 0.5:
+        factors.append(0.5)
+        tempo /= 0.5
+    factors.append(tempo)
+    return ",".join(f"atempo={factor:.6f}" for factor in factors)
+
+
+def _fit_audio_to_slot(input_path: Path, output_path: Path, duration: float, sample_rate: int) -> None:
+    """Speed up overlong speech, then pad or trim it to an exact timeline slot."""
+    import soundfile as sf
+
+    source_duration = sf.info(str(input_path)).duration
+    filters = []
+    if source_duration > duration:
+        filters.append(_atempo_filter(source_duration / duration))
+    filters.extend(["apad", f"atrim=duration={duration:.6f}"])
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-af", ",".join(filters),
+        "-ar", str(sample_rate), "-ac", "1", "-c:a", "pcm_s16le",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio alignment failed: {result.stderr.decode(errors='replace')}")
+
+
+def synthesize_timed_speech(
+    translated_segments: list,
+    language: str,
+    output_path: Path,
+    total_duration: float,
+    synthesizer=synthesize_speech,
+    sample_rate: int = 44100,
+    voice_description: Optional[str] = None,
+    seed: int = 42,
+) -> bool:
+    """Synthesize each subtitle segment and place it at its original timestamp."""
+    import numpy as np
+    import soundfile as sf
+
+    if not _ffmpeg_available():
+        raise RuntimeError("ffmpeg is required for synchronized translated audio.")
+    if total_duration <= 0:
+        raise ValueError("Video duration must be positive.")
+
+    timeline = np.zeros(round(total_duration * sample_rate), dtype=np.float32)
+    rendered = 0
+    with tempfile.TemporaryDirectory(prefix="samvaadhika-dub-") as temp_dir:
+        temp_path = Path(temp_dir)
+        for index, segment in enumerate(translated_segments, start=1):
+            start = max(0.0, float(segment["start"]))
+            end = min(total_duration, float(segment["end"]))
+            text = str(segment.get("text", "")).strip()
+            if not text or end <= start:
+                continue
+
+            raw_path = temp_path / f"segment_{index:04d}_raw.wav"
+            fitted_path = temp_path / f"segment_{index:04d}_fitted.wav"
+            spoken_text = transliterate_text_if_needed(text, language)
+            if not synthesizer(
+                spoken_text,
+                language,
+                raw_path,
+                voice_description=voice_description,
+                seed=seed,
+            ) or not raw_path.exists():
+                raise RuntimeError(f"TTS failed for translated segment {index}.")
+            _fit_audio_to_slot(raw_path, fitted_path, end - start, sample_rate)
+            audio, _ = sf.read(str(fitted_path), dtype="float32", always_2d=False)
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            start_sample = round(start * sample_rate)
+            end_sample = min(len(timeline), start_sample + len(audio))
+            timeline[start_sample:end_sample] += audio[:end_sample - start_sample]
+            rendered += 1
+
+    if not rendered:
+        raise RuntimeError("No translated speech segments were generated.")
+    sf.write(str(output_path), np.clip(timeline, -1.0, 1.0), sample_rate, subtype="PCM_16")
+    return True
+
+
+def probe_media_duration(media_path: Path) -> float:
+    """Return media duration in seconds using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(media_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.decode(errors='replace')}")
+    return float(result.stdout.decode().strip())
+
+
+def _ffmpeg_filter_path(path: Path) -> str:
+    """Escape a local path for use inside an FFmpeg filter expression."""
+    return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+
+
+def mux_translated_video(
+    video_path: Path,
+    audio_path: Path,
+    subtitle_path: Path,
+    output_path: Path,
+    subtitle_language: str,
+) -> bool:
+    """Create an attributed MP4 with translated audio and default soft subtitles."""
+    font_path = BASE_DIR / "fonts" / "NotoSansDevanagari-VariableFont_wdth,wght.ttf"
+    if not font_path.exists():
+        raise RuntimeError(f"Video attribution font is missing: {font_path}")
+    try:
+        has_subtitles = bool(subtitle_path.read_text(encoding="utf-8-sig").strip())
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read translated subtitles: {subtitle_path}") from exc
+    source_duration = probe_media_duration(video_path)
+    subtitle_language_tag = {
+        "en": "eng",
+        "hi": "hin",
+        "mr": "mar",
+    }.get(subtitle_language, subtitle_language)
+    attribution_filter = (
+        "pad=ceil(iw/2)*2:ceil(ih/2)*2,"
+        f"drawtext=fontfile='{_ffmpeg_filter_path(font_path)}':"
+        "text='Translated using Samvaadhika':"
+        "x='max(4,w-tw-7)':y=4:fontsize='min(18,w/18)':fontcolor=white:"
+        "box=1:boxcolor=black@0.6:boxborderw=3"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path),
+    ]
+    if has_subtitles:
+        cmd.extend(["-i", str(subtitle_path)])
+    cmd.extend([
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-vf", attribution_filter,
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+    ])
+    if has_subtitles:
+        cmd.extend([
+            "-map", "2:0", "-c:s", "mov_text", "-disposition:s:0", "default",
+            "-metadata:s:s:0", f"language={subtitle_language_tag}",
+        ])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{output_path.stem}-",
+        suffix=output_path.suffix,
+        dir=output_path.parent,
+        delete=False,
+    ) as temporary_file:
+        temporary_output_path = Path(temporary_file.name)
+    cmd.extend([
+        "-t", f"{source_duration:.3f}", "-movflags", "+faststart",
+        str(temporary_output_path),
+    ])
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=1800)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg video mux failed: {result.stderr.decode(errors='replace')}"
+            )
+        os.replace(temporary_output_path, output_path)
+    finally:
+        temporary_output_path.unlink(missing_ok=True)
+    return True
 
 # ---------------------------------------------------------------------------
 # Subtitle generation

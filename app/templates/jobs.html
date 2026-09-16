@@ -8,7 +8,7 @@
       <div style="font-size:1.25rem;font-weight:800;color:var(--green-dark);">📋 My Translations</div>
       <div class="text-muted" style="font-size:0.85rem;">All your translation jobs — click a row to see details</div>
     </div>
-    <a href="/dashboard" class="btn btn-primary">+ New Translation</a>
+    <a href="/dashboard" class="btn btn-secondary btn-sm">← Back to dashboard</a>
   </div>
 
   <div class="panel">
@@ -28,7 +28,7 @@
           </thead>
           <tbody>
             {% for job in jobs %}
-            <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}">
+            <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}" aria-selected="false">
               <td>
                 <div style="font-weight:600;font-size:0.88rem;">
                   {{ job.input_filename or 'Text translation' }}
@@ -53,9 +53,18 @@
                   <div class="job-progress-fill" id="prog-{{ job.id }}" style="width:{{ job.progress }}%"></div>
                 </div>
                 {% endif %}
+                <div id="timing-{{ job.id }}" class="text-muted" style="font-size:0.72rem;margin-top:4px;white-space:nowrap;">
+                  {% if job.status == 'completed' and job.started_at and job.completed_at %}
+                  Completed in {{ duration_between(job.started_at, job.completed_at) }}
+                  {% elif job.status == 'processing' and job.started_at %}
+                  Elapsed {{ duration_between(job.started_at, none) }} · Estimating…
+                  {% elif job.status == 'queued' %}
+                  Waiting to start
+                  {% endif %}
+                </div>
               </td>
               <td style="font-size:0.8rem;color:var(--text-muted);">
-                {{ job.created_at.strftime('%d %b %Y %H:%M') if job.created_at else '—' }}
+                {{ job.created_at | ist('%d %b %Y %H:%M IST') }}
               </td>
               <td>
                 <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
@@ -69,6 +78,9 @@
                     {% if job.subtitle_path %}
                     <a href="/jobs/{{ job.id }}/download/subtitles" class="btn btn-secondary btn-sm">↓ SRT</a>
                     {% endif %}
+                    {% if job.video_output_path %}
+                    <a href="/jobs/{{ job.id }}/download/video" class="btn btn-primary btn-sm">↓ Video</a>
+                    {% endif %}
                   {% elif job.status == 'failed' %}
                     <span style="font-size:0.75rem;color:var(--danger);" title="{{ job.error_message }}">
                       {{ (job.error_message or 'Unknown error')[:40] }}…
@@ -80,6 +92,28 @@
             {% endfor %}
           </tbody>
         </table>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.85rem 1rem;border-top:1px solid var(--green-border);flex-wrap:wrap;">
+        <span class="text-muted" style="font-size:0.8rem;">
+          Showing {{ ((page - 1) * page_size) + 1 }}–{{ [page * page_size, total_jobs] | min }} of {{ total_jobs }} jobs
+        </span>
+        {% if total_pages > 1 %}
+        <nav aria-label="Jobs pagination" style="display:flex;align-items:center;gap:0.35rem;">
+          {% if page > 1 %}
+          <a href="/jobs?page=1" class="btn btn-secondary btn-sm">First</a>
+          <a href="/jobs?page={{ page - 1 }}" class="btn btn-secondary btn-sm">Previous</a>
+          {% endif %}
+          {% for page_number in page_numbers %}
+          <a href="/jobs?page={{ page_number }}"
+             class="btn {% if page_number == page %}btn-primary{% else %}btn-secondary{% endif %} btn-sm"
+             {% if page_number == page %}aria-current="page"{% endif %}>{{ page_number }}</a>
+          {% endfor %}
+          {% if page < total_pages %}
+          <a href="/jobs?page={{ page + 1 }}" class="btn btn-secondary btn-sm">Next</a>
+          <a href="/jobs?page={{ total_pages }}" class="btn btn-secondary btn-sm">Last</a>
+          {% endif %}
+        </nav>
+        {% endif %}
       </div>
       {% else %}
       <div style="padding:3rem;text-align:center;color:var(--text-muted);">
@@ -106,12 +140,24 @@ document.querySelectorAll('[data-status="processing"],[data-status="queued"]').f
     }
     const prog = document.getElementById('prog-' + jobId);
     if (prog) prog.style.width = data.progress + '%';
+    const timing = document.getElementById('timing-' + jobId);
+    if (timing) timing.textContent = jobTimingText(data);
     if (data.status === 'completed' || data.status === 'failed') {
       clearInterval(interval);
       setTimeout(() => location.reload(), 1000);
     }
   }, 3000);
 });
+
+function jobTimingText(data) {
+  if (data.status === 'completed') return `Completed in ${data.elapsed_display}`;
+  if (data.status === 'processing') {
+    const eta = data.eta_display ? ` · Approx. ${data.eta_display} remaining` : ' · Estimating…';
+    return `Elapsed ${data.elapsed_display}${eta}`;
+  }
+  if (data.status === 'queued') return 'Waiting to start';
+  return '';
+}
 </script>
 <!-- Job details modal -->
 <div id="jobDetailsModal" class="modal" style="display:none;">
@@ -126,6 +172,7 @@ document.querySelectorAll('[data-status="processing"],[data-status="queued"]').f
       <a id="downloadFileBtn" class="btn btn-primary btn-sm" style="display:none;">Download file</a>
       <a id="downloadAudioBtn" class="btn btn-secondary btn-sm" style="display:none;">Download audio</a>
       <a id="downloadSubsBtn" class="btn btn-secondary btn-sm" style="display:none;">Download SRT</a>
+      <a id="downloadVideoBtn" class="btn btn-primary btn-sm" style="display:none;">Download video</a>
     </div>
   </div>
 </div>
@@ -135,19 +182,45 @@ function showJobModal(html) {
   document.getElementById('modalBody').innerHTML = html;
   document.getElementById('jobDetailsModal').style.display = 'block';
 }
-function closeJobModal() { document.getElementById('jobDetailsModal').style.display = 'none'; }
+function closeJobModal() {
+  document.getElementById('jobDetailsModal').style.display = 'none';
+  document.querySelectorAll('tr[data-job-id]').forEach(row => {
+    row.classList.remove('job-row-selected');
+    row.setAttribute('aria-selected', 'false');
+  });
+}
+
+function selectJobRow(jobId) {
+  document.querySelectorAll('tr[data-job-id]').forEach(row => {
+    const selected = row.dataset.jobId === jobId;
+    row.classList.toggle('job-row-selected', selected);
+    row.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+}
+
+function escapeJobDetail(value) {
+  const element = document.createElement('div');
+  element.textContent = value ?? '';
+  return element.innerHTML;
+}
 
 async function loadJobDetails(jobId) {
   const res = await fetch(`/jobs/${jobId}/status`);
   if (!res.ok) return showToastGlobal('Could not load job details');
   const data = await res.json();
+  selectJobRow(jobId);
   const parts = [];
   parts.push(`<div><strong>Job:</strong> ${data.id.slice(0,8)}…</div>`);
-  parts.push(`<div><strong>Input:</strong> ${data.input_filename || 'Text'}</div>`);
+  if (data.job_type === 'text') {
+    const inputText = data.input_text || 'Original text unavailable';
+    parts.push(`<div style="margin-top:0.5rem;"><strong>Input:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeJobDetail(inputText)}</div></div>`);
+  } else {
+    parts.push(`<div><strong>Input:</strong> ${escapeJobDetail(data.input_filename || 'File')}</div>`);
+  }
   parts.push(`<div><strong>Type:</strong> ${data.job_type}</div>`);
   parts.push(`<div><strong>Lang:</strong> ${data.source_language || 'Auto'} → ${data.target_language_name || data.target_language}</div>`);
   parts.push(`<div><strong>Status:</strong> ${data.status}</div>`);
-  if (data.output_text) parts.push(`<div style="margin-top:0.5rem;"><strong>Preview:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;">${data.output_text}</div></div>`);
+  if (data.output_text) parts.push(`<div style="margin-top:0.5rem;"><strong>Preview:</strong><div style="background:#fff;padding:0.5rem;border-radius:6px;margin-top:0.25rem;color:#111;max-height:180px;overflow:auto;white-space:pre-wrap;">${escapeJobDetail(data.output_text)}</div></div>`);
   showJobModal(parts.join(''));
 
   // Buttons
@@ -155,14 +228,17 @@ async function loadJobDetails(jobId) {
   const dlFile = document.getElementById('downloadFileBtn');
   const dlAudio = document.getElementById('downloadAudioBtn');
   const dlSubs = document.getElementById('downloadSubsBtn');
+  const dlVideo = document.getElementById('downloadVideoBtn');
   cancelBtn.style.display = (data.status === 'queued' || data.status === 'processing') ? 'inline-block' : 'none';
   dlFile.style.display = data.has_output_file ? 'inline-block' : 'none';
   dlAudio.style.display = data.has_audio ? 'inline-block' : 'none';
   dlSubs.style.display = data.has_subtitles ? 'inline-block' : 'none';
+  dlVideo.style.display = data.has_video ? 'inline-block' : 'none';
 
   dlFile.href = `/jobs/${jobId}/download`;
   dlAudio.href = `/jobs/${jobId}/download/audio`;
   dlSubs.href = `/jobs/${jobId}/download/subtitles`;
+  dlVideo.href = `/jobs/${jobId}/download/video`;
 
   cancelBtn.onclick = async () => {
     if (!confirm('Cancel this job?')) return;
@@ -188,5 +264,15 @@ document.querySelectorAll('tr[data-job-id]').forEach(row => {
     loadJobDetails(id);
   });
 });
+
+const requestedJobId = new URLSearchParams(location.search).get('job_id');
+if (requestedJobId) {
+  const requestedRow = Array.from(document.querySelectorAll('tr[data-job-id]'))
+    .find(row => row.dataset.jobId === requestedJobId);
+  if (requestedRow) {
+    requestedRow.scrollIntoView({ block: 'center' });
+    loadJobDetails(requestedJobId);
+  }
+}
 </script>
 {% endblock %}

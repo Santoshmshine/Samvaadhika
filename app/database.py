@@ -2,7 +2,7 @@
 Samvaadhika - Database initialization and session management.
 Uses SQLite via SQLAlchemy — zero-config, single-file, no DB server needed.
 """
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.config import DATABASE_URL
@@ -31,6 +31,21 @@ def init_db():
     """Create all tables and seed the default admin user if not present."""
     from app.models import User, Job, GlossaryEntry, AuditLog  # noqa: F401 — needed for metadata
     Base.metadata.create_all(bind=engine)
+    columns = {column["name"] for column in inspect(engine).get_columns("jobs")}
+    if "video_output_path" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE jobs ADD COLUMN video_output_path VARCHAR(512)"))
+    user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    if "is_deleted" not in user_columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE users ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0"
+            ))
+    if "failed_login_attempts" not in user_columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0"
+            ))
     _seed_admin()
 
 

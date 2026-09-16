@@ -330,8 +330,8 @@ import os
 os.environ['DATABASE_URL'] = 'sqlite:///samvaadhika.db'
 
 try:
-    from app.database import engine, Base
-    Base.metadata.create_all(bind=engine)
+    from app.database import init_db
+    init_db()
     print("✅ Database initialized")
 except Exception as e:
     print(f"⚠️  Database initialization: {e}")

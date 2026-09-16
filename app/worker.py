@@ -144,6 +144,7 @@ def _process_audio_job(job: Job, db):
     from app.pipeline import (
         normalize_audio, transcribe_audio, translate_text,
         apply_glossary, synthesize_speech, generate_subtitles,
+        media_translation_confidence, MEDIA_REVIEW_CONFIDENCE,
     )
 
     input_path = Path(job.input_path)
@@ -176,7 +177,12 @@ def _process_audio_job(job: Job, db):
 
     # Step 3: Translate each segment
     translated_segments = []
-    from app.pipeline import detect_and_fix_transliterated_segment, fix_mojibake
+    translation_confidences = []
+    from app.pipeline import (
+        detect_and_fix_transliterated_segment,
+        fix_mojibake,
+        normalize_marathi_asr_text,
+    )
     report_rows = []
     for idx, seg in enumerate(segments, start=1):
         # write per-segment debug files capturing the raw text repr and hex
@@ -192,7 +198,15 @@ def _process_audio_job(job: Job, db):
 
         
         # Attempt to detect and fix Latin-script transliteration (e.g., 'vityanigi riva')
-        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"], asr_hint=detected_lang)
+        prepared_text = seg["text"]
+        if job.source_language == "mr":
+            prepared_text = normalize_marathi_asr_text(prepared_text)
+        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(
+            prepared_text,
+            asr_hint=job.source_language or detected_lang,
+        )
+        if job.source_language == "mr":
+            fixed_lang = "mr"
         try:
             if fixed_text != seg["text"]:
                 logger.info(
@@ -211,6 +225,7 @@ def _process_audio_job(job: Job, db):
         t_text, conf = translate_text(fixed_text, job.source_language, job.target_language)
         t_text = apply_glossary(t_text, job.source_language, job.target_language, db)
         translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
+        translation_confidences.append(conf)
         # record for per-job report
         try:
             orig_raw = seg["text"]
@@ -236,6 +251,11 @@ def _process_audio_job(job: Job, db):
         except Exception:
             pass
     job.progress = 70
+    job.confidence_score = media_translation_confidence(segments, translation_confidences)
+    job.needs_review = (
+        job.confidence_score < MEDIA_REVIEW_CONFIDENCE
+        or any(row["fixed"] != row["orig_raw"] for row in report_rows)
+    )
     db.commit()
 
     # Write per-job CSV report of segment translations for debugging
@@ -286,7 +306,10 @@ def _process_audio_job(job: Job, db):
 def _process_video_job(job: Job, db):
     from app.pipeline import (
         extract_audio_from_video, normalize_audio, transcribe_audio,
-        translate_text, apply_glossary, synthesize_speech, generate_subtitles,
+        translate_text, apply_glossary, generate_subtitles,
+        detect_dominant_voice_gender, mux_translated_video, probe_media_duration,
+        synthesize_timed_speech, tts_voice_description,
+        media_translation_confidence, MEDIA_REVIEW_CONFIDENCE,
     )
 
     input_path = Path(job.input_path)
@@ -317,7 +340,12 @@ def _process_video_job(job: Job, db):
 
     # Step 4: Translate each segment
     translated_segments = []
-    from app.pipeline import detect_and_fix_transliterated_segment, fix_mojibake
+    translation_confidences = []
+    from app.pipeline import (
+        detect_and_fix_transliterated_segment,
+        fix_mojibake,
+        normalize_marathi_asr_text,
+    )
     report_rows = []
     for idx, seg in enumerate(segments, start=1):
         try:
@@ -330,7 +358,15 @@ def _process_video_job(job: Job, db):
         except Exception:
             pass
 
-        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(seg["text"], asr_hint=detected_lang)
+        prepared_text = seg["text"]
+        if job.source_language == "mr":
+            prepared_text = normalize_marathi_asr_text(prepared_text)
+        fixed_text, fixed_lang = detect_and_fix_transliterated_segment(
+            prepared_text,
+            asr_hint=job.source_language or detected_lang,
+        )
+        if job.source_language == "mr":
+            fixed_lang = "mr"
         try:
             if fixed_text != seg["text"]:
                 logger.info(
@@ -348,6 +384,7 @@ def _process_video_job(job: Job, db):
         t_text, conf = translate_text(fixed_text, job.source_language, job.target_language)
         t_text = apply_glossary(t_text, job.source_language, job.target_language, db)
         translated_segments.append({"start": seg["start"], "end": seg["end"], "text": t_text})
+        translation_confidences.append(conf)
         try:
             orig_raw = seg["text"]
             try:
@@ -372,6 +409,11 @@ def _process_video_job(job: Job, db):
         except Exception:
             pass
     job.progress = 70
+    job.confidence_score = media_translation_confidence(segments, translation_confidences)
+    job.needs_review = (
+        job.confidence_score < MEDIA_REVIEW_CONFIDENCE
+        or any(row["fixed"] != row["orig_raw"] for row in report_rows)
+    )
     db.commit()
 
     # Write per-job CSV report of segment translations for debugging
@@ -413,11 +455,39 @@ def _process_video_job(job: Job, db):
     job.progress = 85
     db.commit()
 
-    # Step 5: TTS (text-to-speech) — preserve input filename
+    # Step 5: Generate timestamp-aligned translated speech.
     tts_path = job_out_dir / f"translated_{input_base}.wav"
-    tts_ok = synthesize_speech(full_translated, job.target_language, tts_path)
-    if tts_ok and tts_path.exists():
-        job.audio_output_path = str(tts_path)
+    video_duration = probe_media_duration(input_path)
+    voice_gender = detect_dominant_voice_gender(wav_path, segments)
+    voice_description = tts_voice_description(job.target_language, voice_gender)
+    logger.info(
+        "Job %s using consistent %s TTS voice: %s",
+        job.id[:8],
+        voice_gender,
+        voice_description,
+    )
+    synthesize_timed_speech(
+        translated_segments,
+        job.target_language,
+        tts_path,
+        video_duration,
+        voice_description=voice_description,
+        seed=42,
+    )
+    job.audio_output_path = str(tts_path)
+    job.progress = 95
+    db.commit()
+
+    # Step 6: Replace the source audio and embed the translated SRT as a soft track.
+    video_output_path = job_out_dir / f"translated_{input_base}.mp4"
+    mux_translated_video(
+        input_path,
+        tts_path,
+        srt_path,
+        video_output_path,
+        job.target_language,
+    )
+    job.video_output_path = str(video_output_path)
     job.progress = 100
 
 

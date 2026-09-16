@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.auth import (
     authenticate_user, create_access_token, get_password_hash,
-    get_optional_user,
+    get_optional_user, get_user_by_username, verify_password,
 )
-from app.config import TEMPLATES_DIR
+from app.config import DEFAULT_ADMIN_USERNAME, TEMPLATES_DIR
 from app.database import get_db
 from app.models import AuditLog, User
 
@@ -35,8 +35,54 @@ async def login_submit(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    user = authenticate_user(db, username, password)
+    user = get_user_by_username(db, username)
+    if user and user.is_deleted:
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "error": "Your account has been deleted. Please contact an administrator to have it reinstated.",
+            },
+            status_code=403,
+        )
+    if user and not user.is_active:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Your account has been deactivated."},
+            status_code=403,
+        )
     if not user:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Invalid username or password."},
+            status_code=401,
+        )
+    if not verify_password(password, user.hashed_password):
+        if user.username == DEFAULT_ADMIN_USERNAME:
+            return templates.TemplateResponse(
+                "login.html",
+                {"request": request, "error": "Invalid username or password."},
+                status_code=401,
+            )
+        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+        if user.failed_login_attempts >= 3:
+            user.is_active = False
+            db.add(AuditLog(
+                user_id=user.id,
+                action="auto_deactivate_failed_logins",
+                detail="Account deactivated after 3 incorrect password attempts",
+                ip_address=request.client.host,
+            ))
+            db.commit()
+            return templates.TemplateResponse(
+                "login.html",
+                {
+                    "request": request,
+                    "error": "Your account has been deactivated after 3 incorrect password attempts. Please contact an administrator to have it activated.",
+                },
+                status_code=403,
+            )
+        db.commit()
         return templates.TemplateResponse(
             "login.html",
             {"request": request, "error": "Invalid username or password."},
@@ -48,14 +94,9 @@ async def login_submit(
             {"request": request, "error": "Your account is pending admin approval."},
             status_code=403,
         )
-    if not user.is_active:
-        return templates.TemplateResponse(
-            "login.html",
-            {"request": request, "error": "Your account has been deactivated."},
-            status_code=403,
-        )
 
     token = create_access_token({"sub": user.username})
+    user.failed_login_attempts = 0
     user.last_login = datetime.utcnow()
 
     # Audit log

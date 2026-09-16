@@ -91,7 +91,7 @@
             </div>
             <div>
               <label class="form-label">Translation</label>
-              <div class="result-box" id="translationResult">
+              <div class="result-box is-empty" id="translationResult">
                 <span class="result-placeholder">Translation will appear here…</span>
               </div>
               <div id="translationMeta" class="hidden" style="margin-top:0.4rem;font-size:0.75rem;color:var(--text-muted);display:flex;gap:0.75rem;align-items:center;">
@@ -116,6 +116,9 @@
             <button class="btn btn-primary" id="textTranslateBtn" onclick="translateText()" disabled>
               Translate
             </button>
+            <button class="btn btn-secondary" type="button" onclick="resetTextTranslation()">
+              ↺ Reset
+            </button>
             <span class="spinner hidden" id="textSpinner"></span>
           </div>
         </div>
@@ -137,7 +140,8 @@
         {% if recent_jobs %}
         <ul class="job-list" id="jobList">
           {% for job in recent_jobs %}
-          <li class="job-item" id="job-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}">
+            <li class="job-item job-item-clickable" id="job-{{ job.id }}" data-job-id="{{ job.id }}" data-status="{{ job.status }}"
+              role="link" tabindex="0" aria-label="View details for {{ job.input_filename or 'text translation' }}">
             <div class="job-status-icon {{ job.status }}">
               {% if job.status == 'completed' %}✓
               {% elif job.status == 'processing' %}⟳
@@ -156,6 +160,15 @@
                 <div class="job-progress-fill" style="width:{{ job.progress }}%"></div>
               </div>
               {% endif %}
+              <div class="job-timing text-muted" style="font-size:0.72rem;margin-top:4px;">
+                {% if job.status == 'completed' and job.started_at and job.completed_at %}
+                Completed in {{ duration_between(job.started_at, job.completed_at) }}
+                {% elif job.status == 'processing' and job.started_at %}
+                Elapsed {{ duration_between(job.started_at, none) }} · Estimating…
+                {% elif job.status == 'queued' %}
+                Waiting to start
+                {% endif %}
+              </div>
             </div>
             <div class="job-action">
               {% if job.status == 'completed' %}
@@ -168,6 +181,9 @@
                 {% endif %}
                 {% if job.subtitle_path %}
                 <br/><a class="btn-download" href="/jobs/{{ job.id }}/download/subtitles">📝 Subtitles ↓</a>
+                {% endif %}
+                {% if job.video_output_path %}
+                <br/><a class="btn-download" href="/jobs/{{ job.id }}/download/video">Translated Video ↓</a>
                 {% endif %}
               {% elif job.status == 'processing' %}
                 <span class="badge badge-processing">Processing</span>
@@ -346,6 +362,7 @@ async function submitJob() {
 
 // ── Text translate ──
 let textTimer = null;
+let textRequestVersion = 0;
 function onTextInput() {
   const txt = document.getElementById('sourceText').value;
   document.getElementById('charCount').textContent = txt.length;
@@ -363,6 +380,9 @@ async function translateText() {
   const tgt = document.getElementById('textTargetLang').value;
   const spinner = document.getElementById('textSpinner');
   const btn = document.getElementById('textTranslateBtn');
+  const result = document.getElementById('translationResult');
+  const requestVersion = ++textRequestVersion;
+  result.classList.remove('is-empty');
   spinner.classList.remove('hidden');
   btn.disabled = true;
 
@@ -374,19 +394,39 @@ async function translateText() {
   try {
     const res = await fetch('/translate/text', { method: 'POST', body: fd });
     const data = await res.json();
+    if (requestVersion !== textRequestVersion) return;
     if (!res.ok) throw new Error(data.detail || 'Translation failed');
-    document.getElementById('translationResult').textContent = data.translated_text;
+    result.textContent = data.translated_text;
     document.getElementById('detectedLangText').textContent =
       'Detected: ' + (data.source_language_name || data.source_language);
     document.getElementById('translationMeta').classList.remove('hidden');
     if (data.from_cache) document.getElementById('fromCacheTag').classList.remove('hidden');
     else document.getElementById('fromCacheTag').classList.add('hidden');
   } catch(e) {
-    document.getElementById('translationResult').textContent = 'Error: ' + e.message;
+    if (requestVersion !== textRequestVersion) return;
+    result.textContent = 'Error: ' + e.message;
   } finally {
+    if (requestVersion !== textRequestVersion) return;
     spinner.classList.add('hidden');
     btn.disabled = false;
   }
+}
+
+function resetTextTranslation() {
+  clearTimeout(textTimer);
+  textRequestVersion++;
+  const source = document.getElementById('sourceText');
+  const result = document.getElementById('translationResult');
+  source.value = '';
+  document.getElementById('charCount').textContent = '0';
+  document.getElementById('textTranslateBtn').disabled = true;
+  document.getElementById('textSpinner').classList.add('hidden');
+  result.classList.add('is-empty');
+  result.innerHTML = '<span class="result-placeholder">Translation will appear here…</span>';
+  document.getElementById('translationMeta').classList.add('hidden');
+  document.getElementById('detectedLangText').textContent = '';
+  document.getElementById('fromCacheTag').classList.add('hidden');
+  source.focus();
 }
 
 // ── Text mode toggle ──
@@ -426,6 +466,16 @@ function pollJob(jobId) {
   }, 2500);
 }
 
+function jobTimingText(data) {
+  if (data.status === 'completed') return `Completed in ${data.elapsed_display}`;
+  if (data.status === 'processing') {
+    const eta = data.eta_display ? ` · Approx. ${data.eta_display} remaining` : ' · Estimating…';
+    return `Elapsed ${data.elapsed_display}${eta}`;
+  }
+  if (data.status === 'queued') return 'Waiting to start';
+  return '';
+}
+
 function updateJobRow(data) {
   const row = document.getElementById('job-' + data.id);
   if (!row) return;
@@ -433,6 +483,14 @@ function updateJobRow(data) {
   const icon = row.querySelector('.job-status-icon');
   icon.className = 'job-status-icon ' + data.status;
   icon.textContent = data.status === 'completed' ? '✓' : data.status === 'failed' ? '✕' : '⟳';
+  let timing = row.querySelector('.job-timing');
+  if (!timing) {
+    timing = document.createElement('div');
+    timing.className = 'job-timing text-muted';
+    timing.style.cssText = 'font-size:0.72rem;margin-top:4px;';
+    row.querySelector('.job-meta').appendChild(timing);
+  }
+  timing.textContent = jobTimingText(data);
 
   const action = row.querySelector('.job-action');
   if (data.status === 'completed') {
@@ -440,6 +498,7 @@ function updateJobRow(data) {
     if (data.has_output_file) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download">📄 Document ↓</a>`;
     if (data.has_audio) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/audio">🔊 Audio ↓</a>`;
     if (data.has_subtitles) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/subtitles">📝 Subtitles ↓</a>`;
+    if (data.has_video) links += `<br/><a class="btn-download" href="/jobs/${data.id}/download/video">Translated Video ↓</a>`;
     action.innerHTML = `<span class="badge badge-completed">Completed</span>` + links;
   } else if (data.status === 'failed') {
     action.innerHTML = `<span class="badge badge-failed">Failed</span>`;
@@ -468,15 +527,19 @@ function addJobToList(jobId, filename, targetLang, status) {
   }
   const ul = document.getElementById('jobList');
   const li = document.createElement('li');
-  li.className = 'job-item';
+  li.className = 'job-item job-item-clickable';
   li.id = 'job-' + jobId;
   li.dataset.jobId = jobId;
   li.dataset.status = status;
+  li.setAttribute('role', 'link');
+  li.setAttribute('tabindex', '0');
+  li.setAttribute('aria-label', `View details for ${filename}`);
   li.innerHTML = `
     <div class="job-status-icon ${status}">${status === 'completed' ? '✓' : '·'}</div>
     <div class="job-meta">
       <div class="job-filename">${filename}</div>
       <div class="job-langs">→ ${targetLang}</div>
+      <div class="job-timing text-muted" style="font-size:0.72rem;margin-top:4px;">${status === 'completed' ? '' : 'Waiting to start'}</div>
     </div>
     <div class="job-action">
       <span class="badge badge-${status}">${status.charAt(0).toUpperCase()+status.slice(1)}</span>
@@ -496,6 +559,23 @@ function hideToast() {
 // ── Auto-poll any in-progress jobs on page load ──
 document.querySelectorAll('[data-status="processing"],[data-status="queued"]').forEach(el => {
   pollJob(el.dataset.jobId);
+});
+
+function openDashboardJob(jobId) {
+  location.href = `/jobs?job_id=${encodeURIComponent(jobId)}`;
+}
+
+document.addEventListener('click', event => {
+  const job = event.target.closest('.job-item-clickable[data-job-id]');
+  if (!job || event.target.closest('a, button')) return;
+  openDashboardJob(job.dataset.jobId);
+});
+
+document.addEventListener('keydown', event => {
+  const job = event.target.closest('.job-item-clickable[data-job-id]');
+  if (!job || event.target !== job || !['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  openDashboardJob(job.dataset.jobId);
 });
 </script>
 {% endblock %}
