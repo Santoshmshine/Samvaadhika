@@ -1059,11 +1059,8 @@ def _tts_parler(
     except Exception:
         pass
 
-    # --- HACKATHON HOTFIX: Romanize Marathi script if model tokens conflict ---
-    from unidecode import unidecode
-    if language.lower() in ["marathi", "mr"]:
-        text = unidecode(text)
-    # ------------------------------------------------------------------------
+    # NOTE: Removed unidecode() romanization — Indic Parler-TTS handles
+    # Devanagari natively.  Romanizing garbled the output ("mixed voice").
 
     try:
         # Import core modules safely
@@ -1114,8 +1111,13 @@ def _tts_parler(
         # Clean prompt text to guarantee no formatting character overflows boundaries
         text = text.strip().replace("\n", " ")
     
-        # Safe description fallback override to avoid tokenizer vocabulary size crashes
-        description = "A female speaker delivers her speech with a clear voice."
+        # Use the caller-supplied voice description when available; fall back to
+        # a safe generic description to avoid tokenizer vocabulary size crashes.
+        if voice_description:
+            description = voice_description
+        else:
+            description = "A female speaker delivers her speech with a clear voice."
+        logger.info("TTS voice description: %s", description)
 
         # Ensure uniform padding tokens across all sub-components safely
         for tok in [prompt_tokenizer, description_tokenizer]:
@@ -1311,6 +1313,34 @@ def _ffmpeg_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
+def _pre_encode_audio_to_mp3(wav_path: Path, mp3_path: Path) -> bool:
+    """Pre-encode WAV to MP3 using libmp3lame.
+
+    The native ffmpeg AAC encoder can deadlock on certain mono PCM WAV inputs
+    (observed with ffmpeg 2026-08-03 essentials build on Windows).  Converting
+    to MP3 first and then stream-copying into the MP4 container avoids the
+    hang entirely while keeping audio quality acceptable (192 kbps).
+    """
+    cmd = [
+        "ffmpeg", "-y", "-nostdin",
+        "-i", str(wav_path),
+        "-c:a", "libmp3lame", "-b:a", "192k",
+        str(mp3_path),
+    ]
+    logger.info("Pre-encoding audio: %s → %s", wav_path.name, mp3_path.name)
+    result = subprocess.run(
+        cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=300,
+    )
+    if result.returncode != 0:
+        logger.error(
+            "MP3 pre-encode failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.decode(errors="replace")[-1000:],
+        )
+        return False
+    return mp3_path.exists() and mp3_path.stat().st_size > 0
+
+
 def mux_translated_video(
     video_path: Path,
     audio_path: Path,
@@ -1320,71 +1350,127 @@ def mux_translated_video(
     duration: Optional[float] = None,
 ) -> bool:
     """
-    Stitches translated components instantly using hardware-isolated audio multiplexing.
-    Drops software video-decoding pipelines entirely to completely bypass Late SEI hangs.
+    Combine original video (stream-copied) with translated audio and optional
+    SRT subtitles into a single MP4.
+
+    Audio workflow:
+      1. Pre-encode the WAV to MP3 (avoids native AAC encoder deadlock).
+      2. Mux video (copy) + MP3 audio (copy) + optional SRT subtitles.
+
+    Uses subprocess.run() with a timeout instead of os.system() to avoid
+    hanging on Windows when ffmpeg blocks on stdin or shell quoting issues
+    cause the command to stall.
     """
-    import os
-    import logging
-    
-    logger.info("Muxing translated components using hardware-isolated audio muxing...")
+    logger.info("Muxing translated video: video=%s audio=%s subs=%s → %s",
+                video_path, audio_path, subtitle_path, output_video_path)
 
     has_subtitles = subtitle_path is not None and subtitle_path.exists()
 
+    # --- Step 1: Pre-encode WAV → MP3 to avoid AAC encoder deadlock ----------
+    mp3_audio_path = audio_path.with_suffix(".mp3")
+    if audio_path.suffix.lower() == ".wav":
+        if not _pre_encode_audio_to_mp3(audio_path, mp3_audio_path):
+            logger.error("Failed to pre-encode audio to MP3; aborting mux.")
+            return False
+        mux_audio = mp3_audio_path
+    else:
+        mux_audio = audio_path
+
+    # --- Step 2: Mux video + audio (+ optional subtitles) --------------------
     try:
-        # --- HACKATHON LATE SEI BYPASS: Force rapid stream copy ---
         cmd = [
-            "ffmpeg", "-y", 
-            "-i", str(video_path), 
-            "-i", str(audio_path)
+            "ffmpeg", "-y", "-nostdin",
+            "-i", str(video_path),
+            "-i", str(mux_audio),
         ]
-        
+
         if has_subtitles:
             cmd.extend(["-i", str(subtitle_path)])
-            
+
         cmd.extend([
-            "-map", "0:v:0",          # Retain the exact original video stream
-            "-map", "1:a:0",          # Source the translated audio file
-            "-c:v", "copy",           # ⚡ CRITICAL FIX: Direct stream copy (Bypasses the decoder completely)
-            "-c:a", "aac",            # Encode the translated audio track to a clean AAC stream
-            "-b:a", "192k"
+            "-map", "0:v:0",       # keep original video stream
+            "-map", "1:a:0",       # use translated audio
+            "-c:v", "copy",        # stream-copy video (no re-encode)
+            "-c:a", "copy",        # stream-copy pre-encoded MP3 audio
         ])
-        
+
         if has_subtitles:
             cmd.extend([
-                "-map", "2:0", 
-                "-c:s", "mov_text", 
+                "-map", "2:0",
+                "-c:s", "mov_text",
                 "-disposition:s:0", "default",
                 "-metadata:s:s:0", f"language={subtitle_language_tag}",
             ])
-            
+
         if duration:
             cmd.extend(["-t", str(duration)])
 
-        # Optimization flag configuration to fix broken streaming headers instantly
         cmd.extend([
+            "-shortest",
             "-movflags", "+faststart",
-            str(output_video_path)
+            str(output_video_path),
         ])
-        # ----------------------------------------------------------------------------
 
-        # --- HACKATHON SYSTEM SHELL BYPASS ---
-        # Wraps path paths cleanly in quotation hooks for Windows space structures
-        cmd_str = " ".join([f'"{arg}"' if " " in arg or "\\" in arg else arg for arg in cmd])
-        logger.info("Invoking raw hardware-isolated system shell execution layer...")
-        
-        # Direct shell runtime execution prevents background pipe logic locks
-        return_code = os.system(cmd_str)
-        
-        if return_code == 0:
-            logger.info("Multiplexing execution loop finished successfully via shell bypass.")
+        logger.info("FFmpeg mux command: %s", cmd)
+
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=300,
+        )
+
+        if result.returncode == 0:
+            logger.info("Video muxing completed successfully: %s", output_video_path)
             return True
-            
-        logger.error(f"Shell execution layer returned non-zero crash state: {return_code}")
+
+        stderr_text = result.stderr.decode(errors="replace")
+        logger.error("FFmpeg mux failed (rc=%d): %s", result.returncode, stderr_text[-2000:])
+
+        # If subtitle muxing caused the failure, retry without subtitles
+        if has_subtitles:
+            logger.warning("Retrying mux without subtitle track...")
+            cmd_no_subs = [
+                "ffmpeg", "-y", "-nostdin",
+                "-i", str(video_path),
+                "-i", str(mux_audio),
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-shortest",
+                "-movflags", "+faststart",
+                str(output_video_path),
+            ]
+            retry = subprocess.run(
+                cmd_no_subs,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=300,
+            )
+            if retry.returncode == 0:
+                logger.info("Video muxing succeeded on retry (without subtitles): %s",
+                            output_video_path)
+                return True
+            logger.error("FFmpeg mux retry also failed (rc=%d): %s",
+                         retry.returncode,
+                         retry.stderr.decode(errors="replace")[-2000:])
+
         return False
 
-    except Exception as e:
-        logger.exception(f"Unexpected muxing failure: {e}")
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg mux timed out after 300 seconds — killing process.")
         return False
+    except Exception as e:
+        logger.exception("Unexpected muxing failure: %s", e)
+        return False
+    finally:
+        # Clean up temporary MP3 file
+        try:
+            if mp3_audio_path.exists() and mp3_audio_path != audio_path:
+                mp3_audio_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 
